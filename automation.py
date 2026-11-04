@@ -1,0 +1,358 @@
+"""Tự cào kênh và tự đăng theo khung giờ. Mọi thao tác Facebook chạy trên một luồng riêng (Playwright sync)."""
+from __future__ import annotations
+
+import json
+import queue
+import random
+import re
+import threading
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import ytcore
+
+STATE = ytcore.app_dir() / "automation.json"
+DEFAULTS = {
+    "channels": [],
+    "pages": [],  # [{"name", "url"}]
+    "slots": ["08:00", "12:00", "20:00"],
+    "caption": "{title}\n\n{hashtags}",
+    "hashtags": "",
+    "enabled": False,
+    "scan_minutes": 15,
+    "seen": {},  # kênh -> [video id]; lần quét đầu chỉ lấy mốc, không tải lịch sử kênh
+    "fired": {},  # khung giờ -> ngày đã chạy
+    "posts": {},  # "videoId|pageUrl" -> {state, url, at, error, title, page, fails}
+    "account": None,
+    "keywords": [],
+    "reading": False,  # đọc tin theo từ khóa mỗi giờ, như bot bản web
+    "last_read": 0,
+    "show_browser": False,  # hiện cửa sổ trình duyệt khi bot chạy, để dễ gỡ lỗi
+}
+MAX_FAILS = 2
+SLOT_GRACE = timedelta(minutes=30)
+READ_EVERY = 3600
+
+
+def parse_keywords(text: str) -> list[str]:
+    keywords = list(dict.fromkeys(k.strip() for k in re.split(r"[,\n]+", text) if k.strip()))
+    if len(keywords) > 100 or any(len(k) > 100 for k in keywords):
+        raise ValueError("Tối đa 100 từ khóa, mỗi từ khóa tối đa 100 ký tự.")
+    return keywords
+
+
+def parse_pages(text: str) -> list[dict]:
+    """Mỗi dòng `Tên Page | https://www.facebook.com/...`. Link có Page ID giúp xác minh chính xác hơn."""
+    pages = []
+    for i, line in enumerate(l.strip() for l in text.splitlines()):
+        if not line or line.startswith("#"):
+            continue
+        name, _, url = (part.strip() for part in line.partition("|"))
+        if not url or not re.match(r"^https://(www\.|m\.)?facebook\.com/", url):
+            raise ValueError(f"Dòng Page {i + 1}: cần dạng Tên Page | https://www.facebook.com/…")
+        pages.append({"name": name, "url": url.split("#")[0]})
+    return pages
+
+
+def parse_slots(text: str) -> list[str]:
+    slots = []
+    for part in re.split(r"[,\s;]+", text.strip()):
+        if not part:
+            continue
+        # 08:00, 8.30, 20h, 20h30
+        m = re.fullmatch(r"(\d{1,2})(?:[:.](\d{2})|h(\d{2})?)", part, re.I)
+        minute = (m[2] or m[3] or "00") if m else ""
+        if not m or int(m[1]) > 23 or int(minute) > 59:
+            raise ValueError(f"Khung giờ “{part}” không hợp lệ. Ví dụ: 08:00, 12:30, 20h")
+        slots.append(f"{int(m[1]):02}:{minute}")
+    return sorted(set(slots))
+
+
+def caption_for(template: str, title: str, hashtags: str, source_url: str) -> str:
+    text = re.sub(r"\{(title|hashtags|sourceUrl)\}", lambda m: {"title": title, "hashtags": hashtags, "sourceUrl": source_url}[m[1]], template)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()[:5000]
+
+
+def due_slots(slots: list[str], fired: dict, now: datetime) -> list[str]:
+    """Khung giờ đã tới trong 30 phút qua và chưa chạy hôm nay. Tắt máy lâu hơn thì bỏ qua, không đăng bù."""
+    today = now.date().isoformat()
+    due = []
+    for slot in slots:
+        h, m = map(int, slot.split(":"))
+        at = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if at <= now < at + SLOT_GRACE and fired.get(slot) != today:
+            due.append(slot)
+    return due
+
+
+def next_slot(slots: list[str], fired: dict, now: datetime) -> datetime | None:
+    today = now.date().isoformat()
+    times = []
+    for slot in slots:
+        h, m = map(int, slot.split(":"))
+        at = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        if at + SLOT_GRACE <= now or fired.get(slot) == today:
+            at += timedelta(days=1)
+        times.append(at)
+    return min(times) if times else None
+
+
+def pick_video(library: list[dict], pages: list[dict], posts: dict) -> dict | None:
+    """Video tải về sớm nhất còn Page chưa đăng. Bỏ qua cặp đã đăng, đang cần kiểm tra, hoặc lỗi quá MAX_FAILS lần."""
+    for video in sorted(library, key=lambda v: v["modified"]):
+        if not video.get("id"):
+            continue
+        for page in pages:
+            post = posts.get(f"{video['id']}|{page['url']}")
+            if not post or (post["state"] == "failed" and post.get("fails", 0) < MAX_FAILS):
+                return video
+    return None
+
+
+class Store:
+    def __init__(self, path: Path = STATE):
+        self.path = path
+        self.lock = threading.RLock()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        self.data = {**json.loads(json.dumps(DEFAULTS)), **data}
+
+    def save(self):
+        with self.lock:
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.data, ensure_ascii=False, indent=1), encoding="utf-8")
+            tmp.replace(self.path)
+
+    def set_post(self, key: str, **values):
+        with self.lock:
+            self.data["posts"][key] = {**self.data["posts"].get(key, {}), **values}
+            self.save()
+
+
+class Engine(threading.Thread):
+    """Vòng lặp: quét kênh theo chu kỳ, tải video mới, tới khung giờ thì đăng một video lên mọi Page."""
+
+    def __init__(self, store: Store, settings, emit):
+        super().__init__(daemon=True)
+        self.store = store
+        self.settings = settings  # () -> (thư mục lưu, chiều cao tối đa)
+        self.emit = emit  # (kind, payload) -> None, gọi từ luồng này
+        self.commands: queue.Queue = queue.Queue()
+        self.stop_event = threading.Event()
+        self.tools = None
+        self.last_scan = 0.0
+        self.busy = False
+        # Lần trước tắt app giữa chừng: đã bấm Đăng thì phải kiểm tra tay, chưa bấm thì cho thử lại.
+        for post in store.data["posts"].values():
+            if post.get("state") == "posting":
+                post.update(state="uncertain", error="App bị tắt sau khi bấm Đăng. Kiểm tra Page.")
+            elif post.get("state") == "preparing":
+                post.update(state="failed", error="App bị tắt trước khi bấm Đăng.")
+        store.save()
+
+    def log(self, text: str):
+        self.emit("log", f"{datetime.now():%H:%M} {text}")
+
+    def run(self):
+        while not self.stop_event.is_set():
+            try:
+                command = self.commands.get(timeout=20)
+            except queue.Empty:
+                command = ("tick",)
+            try:
+                self.busy = True
+                self.handle(*command)
+            except Exception as e:  # không để một lỗi làm chết vòng lặp
+                self.log(f"Lỗi: {e}")
+            finally:
+                self.busy = False
+                self.emit("changed", None)
+
+    def handle(self, kind, *args):
+        data = self.store.data
+        if kind == "login":
+            import fbpost
+
+            self.log("Đã mở cửa sổ Facebook: đăng nhập, xác minh nếu được hỏi, xong thì đóng cửa sổ.")
+            fbpost.login_until_closed()
+            return self.check_account()
+        if kind == "check_account":
+            return self.check_account()
+        if kind == "scan_now":
+            return self.scan()
+        if kind == "post_now":
+            return self.post_slot(manual=True)
+        if kind == "lookup":
+            return self.lookup(*args)
+        if kind == "read_now":
+            return self.read()
+        if kind != "tick":
+            return
+        if data["reading"] and data["keywords"] and (data.get("account") or {}).get("ok") is not False \
+                and time.time() - data["last_read"] >= READ_EVERY:
+            self.read()
+        if not data["enabled"]:
+            return
+        now = datetime.now()
+        for slot in due_slots(data["slots"], data["fired"], now):
+            with self.store.lock:
+                data["fired"][slot] = now.date().isoformat()
+                self.store.save()
+            self.log(f"Tới khung giờ {slot}.")
+            self.post_slot()
+        if time.time() - self.last_scan >= data["scan_minutes"] * 60:
+            self.scan()
+
+    def ensure_tools(self):
+        if self.tools is None:
+            self.tools = ytcore.ensure_tools(lambda m, f=None: self.emit("status", m + (f" {f:.0%}" if f else "")))
+        return self.tools
+
+    # ---------- tài khoản ----------
+    def check_account(self):
+        import fbpost
+
+        try:
+            with fbpost.Session(self.store.data["show_browser"]) as s:
+                account = s.account()
+            self.store.data["account"] = {**account, "ok": True, "checked_at": datetime.now().isoformat(timespec="minutes")}
+            self.log(f"Đã đăng nhập Facebook: {account['name'] or account['id']}.")
+        except fbpost.AuthRequired:
+            self.store.data["account"] = {"ok": False, "checked_at": datetime.now().isoformat(timespec="minutes")}
+            self.log("Facebook chưa đăng nhập hoặc đang yêu cầu xác minh. Bấm Đăng nhập Facebook.")
+        self.store.save()
+
+    # ---------- đọc tin ----------
+    def read(self):
+        import fbpost
+
+        data = self.store.data
+        if not data["keywords"]:
+            return self.log("Chưa có từ khóa để đọc tin.")
+        with self.store.lock:
+            data["last_read"] = time.time()
+            self.store.save()
+        keyword = random.choice(data["keywords"])
+        self.log(f"Đọc tin theo từ khóa “{keyword}” (khoảng 1 phút)…")
+        try:
+            with fbpost.Session(self.store.data["show_browser"]) as s:
+                s.read_feed(keyword, self.stop_event.wait)
+            self.log("Đã tìm và cuộn đọc một lượt.")
+        except fbpost.AuthRequired:
+            with self.store.lock:
+                data["account"] = {"ok": False, "checked_at": datetime.now().isoformat(timespec="minutes")}
+                self.store.save()
+            self.log("Facebook yêu cầu đăng nhập/xác minh. Dừng đọc tin; bấm Đăng nhập Facebook.")
+
+    # ---------- cào ----------
+    def scan(self):
+        self.last_scan = time.time()
+        data = self.store.data
+        if not data["channels"]:
+            return
+        tools = self.ensure_tools()
+        output, height = self.settings()
+        for channel in data["channels"]:
+            try:
+                item = ytcore.youtube_input(channel)
+                videos = []
+                ytcore.expand(item, tools, videos.append, self.stop_event.is_set)
+            except Exception as e:
+                self.log(f"Không quét được {channel}: {str(e)[:150]}")
+                continue
+            seen = set(data["seen"].get(item.url, []))
+            first = item.url not in data["seen"]
+            new = [v for v in videos if v["id"] not in seen]
+            with self.store.lock:
+                data["seen"][item.url] = sorted(seen | {v["id"] for v in videos})
+                self.store.save()
+            if first:
+                self.log(f"Lấy mốc kênh {item.url}: {len(videos)} video cũ, chỉ tải video mới từ giờ.")
+                continue
+            for video in reversed(new):  # cũ trước, mới sau
+                if self.stop_event.is_set():
+                    return
+                self.log(f"Video mới: {video['title'][:60]} — đang tải…")
+                try:
+                    result = ytcore.download(video["url"], output, height, tools, lambda f, s: None, self.stop_event.is_set)
+                    self.log("Tải xong." if not result.get("skipped") else "Đã có trong thư mục.")
+                except Exception as e:
+                    self.log(f"Tải lỗi: {str(e)[:150]}")
+        self.emit("library", None)
+
+    # ---------- đăng ----------
+    def post_slot(self, manual=False):
+        import fbpost
+
+        data = self.store.data
+        pages = data["pages"]
+        if not pages:
+            return self.log("Chưa có Page để đăng.")
+        output, _ = self.settings()
+        video = pick_video(ytcore.scan_library(output), pages, data["posts"])
+        if not video:
+            return self.log("Không còn video nào chưa đăng trong Thư viện.")
+        caption = caption_for(data["caption"], video["title"], data["hashtags"], video.get("url") or "")
+        self.log(f"Đăng “{video['title'][:60]}” lên {len(pages)} Page{' (thử ngay)' if manual else ''}.")
+        try:
+            session = fbpost.Session(self.store.data["show_browser"])
+        except Exception as e:
+            return self.log(f"Không mở được trình duyệt: {e}")
+        try:
+            for page in pages:
+                key = f"{video['id']}|{page['url']}"
+                post = data["posts"].get(key)
+                if post and (post["state"] in ("posted", "uncertain", "posting") or post.get("fails", 0) >= MAX_FAILS):
+                    continue
+                self.store.set_post(key, state="preparing", title=video["title"], page=page["name"], at=datetime.now().isoformat(timespec="minutes"), error=None)
+                self.emit("changed", None)
+                try:
+                    page_id = session.switch_page(page)
+                    # Ghi "đang gửi" bền vững trước khi bấm: mất điện/treo sau đó sẽ thành Cần kiểm tra, không đăng lại.
+                    url = session.publish(video["file"], caption, page, page_id,
+                                          lambda: self.store.set_post(key, state="posting", page_id=page_id), self.log)
+                    self.store.set_post(key, state="posted", url=url, error=None)
+                    self.log(f"Đã đăng lên {page['name']}: {url}")
+                except fbpost.AuthRequired:
+                    state = "uncertain" if data["posts"][key]["state"] == "posting" else "failed"
+                    self.store.set_post(key, state=state, error="Facebook yêu cầu đăng nhập/xác minh lại.")
+                    with self.store.lock:
+                        data["account"] = {"ok": False, "checked_at": datetime.now().isoformat(timespec="minutes")}
+                        self.store.save()
+                    self.log("Facebook yêu cầu đăng nhập lại. Dừng đăng.")
+                    return
+                except fbpost.Uncertain as e:
+                    self.store.set_post(key, state="uncertain", error=str(e))
+                    self.log(f"{page['name']}: {e}")
+                except Exception as e:
+                    if data["posts"][key]["state"] == "posting":
+                        self.store.set_post(key, state="uncertain", error=f"Lỗi sau khi bấm Đăng: {str(e)[:200]}")
+                    else:
+                        fails = data["posts"][key].get("fails", 0) + 1
+                        self.store.set_post(key, state="failed", fails=fails, error=str(e)[:300])
+                    self.log(f"{page['name']}: {str(e)[:200]}")
+                self.emit("changed", None)
+        finally:
+            session.close()
+
+    def lookup(self, key: str):
+        """Kiểm tra lại bài Cần kiểm tra trên Page (chỉ đọc)."""
+        import fbpost
+
+        post = self.store.data["posts"].get(key)
+        page = next((p for p in self.store.data["pages"] if p["url"] == key.split("|", 1)[1]), None)
+        if not post or not page:
+            return
+        video = next((v for v in ytcore.scan_library(self.settings()[0]) if v["id"] == key.split("|")[0]), None)
+        caption = caption_for(self.store.data["caption"], post.get("title") or "", self.store.data["hashtags"], (video or {}).get("url") or "")
+        with fbpost.Session(self.store.data["show_browser"]) as s:
+            page_id = s.switch_page(page)
+            url = s.lookup(page, page_id, caption)
+        if url:
+            self.store.set_post(key, state="posted", url=url, error=None)
+            self.log(f"Tìm thấy bài trên {page['name']}: {url}")
+        else:
+            self.log(f"Chưa thấy bài trên {page['name']}. Mở Page kiểm tra bằng mắt.")

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+fb-profile/
+downloads/
+dist/
+build/
+*.spec
+.venv/
+config.json
+state.json
