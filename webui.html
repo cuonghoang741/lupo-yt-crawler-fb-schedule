@@ -33,6 +33,8 @@ a{color:var(--accent);text-decoration:none}
 #banner.show{display:flex}
 #banner .t{flex:1;color:var(--accent-d);font-weight:600}
 #main{flex:1;overflow-y:auto;padding:22px 28px 40px}
+#accountbar{padding:12px 28px;background:var(--card);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:12px}
+#accountbar select{max-width:340px}
 #statusbar{flex:none;background:var(--card);border-top:1px solid var(--bd);padding:7px 20px;display:flex;align-items:center;gap:12px;color:var(--muted);font-size:13px}
 #activity{color:var(--accent);font-weight:600;margin-left:auto}
 h1{font-size:23px;margin:0 0 3px}
@@ -96,8 +98,9 @@ tr:last-child td{border-bottom:none}
 </style>
 </head>
 <body>
-<nav id="side"><div class="brand"><b>YouTube → Facebook</b><span>Tải video và tự đăng Page</span></div><div id="navbox"></div></nav>
+<nav id="side"><div class="brand"><b>YouTube → Facebook</b><span>Tải video và tự đăng Page · v9</span></div><div id="navbox"></div></nav>
 <div id="wrap">
+  <div id="accountbar"><label for="account-select">Tài khoản Facebook</label><select id="account-select" class="inline"></select><span class="muted" id="account-summary"></span></div>
   <div id="banner"><div class="t" id="banner-t"></div><button class="btn primary" id="banner-b"></button></div>
   <div id="main"></div>
   <div id="statusbar"><span id="status">Sẵn sàng.</span><span id="activity"></span></div>
@@ -114,7 +117,7 @@ async function api(path,body){
   const j=await r.json().catch(()=>({error:'Lỗi mạng'}));
   if(!r.ok) throw new Error(j.error||'Lỗi'); return j;
 }
-async function act(action,extra){ try{const r=await api('/api/action',{action,...(extra||{})}); await refresh(); return r;}catch(e){toast(e.message,true);throw e;} }
+async function act(action,extra){ try{const r=await api('/api/action',{action,account_id:S.selected_account_id,...(extra||{})}); await refresh(); return r;}catch(e){toast(e.message,true);throw e;} }
 function toast(msg,err){const t=$('toast');t.textContent=msg;t.className='toast show'+(err?' err':'');clearTimeout(t._t);t._t=setTimeout(()=>t.className='toast',2600);}
 
 const NAV=[
@@ -195,23 +198,30 @@ function renderRender(){
 }
 function renderFacebook(){
   return page('Tài khoản & Page','',`
-   <div class="card"><h2>1. Tài khoản Facebook</h2><div id="fb-acc"></div>
+   <div class="card"><h2>Tài khoản Facebook</h2>
+     <div class="row"><input type="text" id="new-acc-label" placeholder="Tên để phân biệt tài khoản" style="flex:1" maxlength="100">
+       <select id="new-acc-browser" class="inline">${(S.browsers||[]).map(b=>`<option value="${b.id}">${esc(b.label)}</option>`).join('')}</select>
+       <button class="btn primary" data-act="add_account">+ Thêm tài khoản</button></div>
+     <div class="tbl-wrap" style="margin-top:12px"><table><thead><tr><th>Tài khoản</th><th>Trình duyệt</th><th>Trạng thái</th><th></th></tr></thead><tbody id="acc-rows"></tbody></table></div></div>
+   <div class="card"><h2>Đang chọn: ${esc(S.account_label)}</h2><div id="fb-acc"></div>
      <label class="fld">Trình duyệt đăng nhập</label>
      <div class="row"><select id="fb-browser" class="inline" style="min-width:210px"></select>
-       <span class="muted" style="font-size:12.5px">Mỗi trình duyệt có hồ sơ đăng nhập riêng (đổi trình duyệt là đăng nhập lại từ đầu).</span></div>
+       <span class="muted" style="font-size:12.5px">Hồ sơ riêng theo tài khoản và trình duyệt. Đổi trình duyệt cần đăng nhập lại.</span></div>
      <div class="row" style="margin-top:12px"><button class="btn primary" id="fb-login" data-act="login">Đăng nhập Facebook</button>
        <button class="btn" id="fb-open" data-act="open_browser">Mở lại trình duyệt tài khoản</button>
        <button class="btn" data-act="check_account">Kiểm tra lại</button></div></div>
-   <div class="card"><h2>2. Page sẽ đăng</h2><div class="desc">Mỗi video đăng lên tất cả Page dưới đây. Tên Page phải giống tên hiển thị trên Facebook.</div>
-     <div class="row"><input type="text" id="pg-name" placeholder="Tên Page" style="flex:1">
-       <input type="text" id="pg-url" placeholder="https://www.facebook.com/..." style="flex:2">
-       <button class="btn primary" data-act="add_page">+ Thêm</button></div>
-     <div class="tbl-wrap" style="margin-top:12px"><table><thead><tr><th>Tên Page</th><th>Link</th><th></th></tr></thead><tbody id="pg-rows"></tbody></table></div></div>`);
+   <div class="card"><h2>Page quản lý</h2><div class="desc">Quét từ tài khoản đang chọn, sau đó chọn Page tại Lịch đăng. Quét không tự bật đăng bài.</div>
+     <div class="row"><button class="btn primary" data-act="scan_pages">Quét Page ngay</button>
+       <button class="btn" data-act="go" data-k="schedule">Chọn Page & đặt lịch →</button></div>
+     <div id="pg-status"></div>
+     <div class="tbl-wrap" style="margin-top:12px"><table><thead><tr><th>Tên Page</th><th>Link</th><th>Lịch đăng</th></tr></thead><tbody id="pg-rows"></tbody></table></div></div>`);
 }
 function renderSchedule(){
   const s=S;
   return page('Lịch đăng & nội dung','',`
-   <div class="card"><h2>Giờ đăng mỗi ngày</h2><div class="desc">Mỗi khung giờ đăng 1 video (cũ nhất chưa đăng) lên tất cả Page. Cách nhau bằng dấu phẩy: 08:00, 12:00, 20h</div>
+   <div class="card"><h2>Page của ${esc(s.account_label)}</h2><div class="desc">Đổi tài khoản ở thanh trên để cấu hình lịch riêng. Chỉ các Page được tick mới nhận video.</div>
+     <div id="sc-pages"></div><button class="btn sm" data-act="scan_pages">Quét Page lại</button></div>
+   <div class="card"><h2>Giờ đăng mỗi ngày</h2><div class="desc">Mỗi khung giờ đăng 1 video cũ nhất chưa đăng lên các Page đã chọn. Ví dụ: 08:00, 12:00, 20h</div>
      <input type="text" id="sc-slots" value="${esc((s.slots||[]).join(', '))}"></div>
    <div class="card"><h2>Nội dung bài</h2><div class="desc">Chữ trong ngoặc được thay tự động: {title} tiêu đề, {hashtags} hashtag, {sourceUrl} link YouTube.</div>
      <textarea id="sc-cap">${esc(s.caption||'')}</textarea>
@@ -222,7 +232,7 @@ function renderSchedule(){
 function renderHistory(){
   return page('Lịch sử đăng','“Cần kiểm tra” là đã bấm Đăng nhưng chưa lấy được link. Tool không tự đăng lại để tránh trùng.',`
    <div class="card"><div class="tbl-wrap"><div class="tbl-scroll"><table>
-     <thead><tr><th>Thời gian</th><th>Video</th><th>Page</th><th>Trạng thái</th><th>Link / lỗi</th><th></th></tr></thead>
+     <thead><tr><th>Thời gian</th><th>Video</th><th>Tài khoản / Page</th><th>Trạng thái</th><th>Link / lỗi</th><th></th></tr></thead>
      <tbody id="hist-rows"></tbody></table></div></div></div>
    <div class="card"><h2>Nhật ký bot</h2><div class="desc">Lưu ra file theo ngày trong thư mục logs.</div><div id="log"></div></div>`);
 }
@@ -246,8 +256,8 @@ function renderSettings(){
        <button class="btn" data-act="pick_frame">Chọn…</button></div>
      <div class="note ${r.found?'ok':'warn'}" style="margin-top:8px">${r.found?('✓ Tìm thấy: '+esc(r.found)):'Chưa tìm thấy Frame Preview (cần file render_cli.py).'}</div>
      <div class="row" style="margin-top:12px"><button class="btn primary" data-act="save_render">Lưu render</button><span class="muted" id="st-rstate"></span></div></div>
-   <div class="card"><h2>Facebook nâng cao</h2><div class="desc">Không bắt buộc.</div>
-     <div class="chk"><input type="checkbox" id="st-read" ${s.reading?'checked':''}><label for="st-read">Đọc tin mỗi giờ cho giống người thật (tìm từ khóa, cuộn đọc ~1 phút)</label></div>
+   <div class="card"><h2>Đọc tin · ${esc(s.account_label)}</h2><div class="desc">Từ khóa và bật/tắt đọc tin lưu riêng cho tài khoản đang chọn.</div>
+     <div class="chk"><input type="checkbox" id="st-read" ${s.reading?'checked':''}><label for="st-read">Đọc tin theo từ khóa mỗi giờ</label></div>
      <label class="fld">Từ khóa (cách nhau bằng dấu phẩy)</label><input type="text" id="st-kw" value="${esc((s.keywords||[]).join(', '))}">
      <div class="chk" style="margin-top:10px"><input type="checkbox" id="st-show" ${s.show_browser?'checked':''}><label for="st-show">Hiện trình duyệt khi bot chạy (chỉ để gỡ lỗi)</label></div>
      <div class="row" style="margin-top:12px"><button class="btn primary" data-act="save_advanced">Lưu</button>
@@ -256,9 +266,14 @@ function renderSettings(){
 
 function live(){
   const s=S; if(!s||!s.steps) return;
+  const asel=$('account-select'), ahtml=(s.accounts||[]).map(a=>`<option value="${esc(a.id)}">${esc(a.label)}${a.enabled?' · Tự động bật':''}</option>`).join('');
+  if(asel.innerHTML!==ahtml)asel.innerHTML=ahtml;
+  asel.value=s.selected_account_id;
+  $('account-summary').textContent=(s.enabled_accounts||0)+' tài khoản đang tự động';
   setBdg('library', s.waiting); setBdg('history', s.check_count, '#FBBF24');
   const ov=$('bdg-overview'); if(ov){ov.style.display=s.enabled?'':'none';ov.textContent='Bật';ov.style.background=s.enabled?'var(--ok)':''}
-  $('activity').textContent=s.activity?('⏳ '+s.activity):'';
+  const active=(s.accounts||[]).find(a=>a.id===s.activity_account_id);
+  $('activity').textContent=s.activity?('⏳ '+(active?active.label+' · ':'')+s.activity):'';
   const todo=s.steps.findIndex(x=>!x.done), acc=s.account;
   if(acc&&!acc.ok) showBanner('Facebook cần đăng nhập lại. Tool đã dừng đăng.','Đăng nhập','login',{});
   else if(todo<0) hideBanner();
@@ -321,18 +336,30 @@ function liveRender(){
 function liveFacebook(){
   const s=S, a=s.account; if(!$('fb-acc'))return;
   let col='warn',txt='Chưa đăng nhập',hint='Bấm Đăng nhập Facebook, đăng nhập trong cửa sổ mở ra rồi đóng cửa sổ đó.';
-  if(a&&a.ok){col='ok';txt='✓ Đã đăng nhập: '+esc(a.name||a.id);hint='Kiểm tra lúc '+esc((a.checked_at||'').replace('T',' '))+'. Tiếp theo: thêm Page bên dưới.';}
-  else if(a){col='err';txt='Facebook cần đăng nhập/xác minh lại';hint='Bấm Đăng nhập Facebook.';}
+  if(a&&a.ok){col='ok';txt='✓ Đã đăng nhập: '+esc(a.name||a.id);hint='Kiểm tra lúc '+esc((a.checked_at||'').replace('T',' '))+'. Quét Page bên dưới rồi chọn ở Lịch đăng.';}
+  else if(a){col='err';txt='Facebook cần đăng nhập/xác minh lại';hint=esc(a.error||'Bấm Đăng nhập Facebook.');}
   $('fb-acc').innerHTML=`<div style="font-weight:600;color:var(--${col})">${txt}</div><div class="muted" style="margin-top:3px">${hint}</div>`;
   $('fb-login').className='btn '+((a&&a.ok)?'':'primary');
   const bsel=$('fb-browser'); if(bsel&&bsel.dataset.ready!=='1'){bsel.innerHTML=(s.browsers||[]).map(b=>`<option value="${b.id}">${esc(b.label)}</option>`).join('');bsel.value=s.browser||'chrome';bsel.dataset.ready='1';}
-  $('pg-rows').innerHTML=(s.pages||[]).length?s.pages.map(p=>`<tr><td>${esc(p.name)}</td><td class="muted">${esc(p.url)}</td><td class="r"><button class="btn sm" data-act="remove_page" data-url="${esc(p.url)}">Xóa</button></td></tr>`).join(''):`<tr><td colspan="3"><div class="empty">Chưa có Page nào.</div></td></tr>`;
+  $('acc-rows').innerHTML=(s.accounts||[]).map(ac=>`<tr><td>${esc(ac.label)}</td><td>${esc((s.browsers||[]).find(b=>b.id===ac.browser)?.label||ac.browser)}</td><td>${ac.ok?'Đã kết nối':'Chưa kết nối'}${ac.enabled?' · Tự động bật':''}</td><td class="r"><button class="btn sm" data-act="select_account" data-id="${esc(ac.id)}">${ac.id===s.selected_account_id?'Đang chọn':'Chọn'}</button> <button class="btn sm" data-act="remove_account" data-id="${esc(ac.id)}">Xóa</button></td></tr>`).join('');
+  const selected=new Set((s.pages||[]).map(p=>p.url));
+  $('pg-rows').innerHTML=(s.available_pages||[]).length?s.available_pages.map(p=>`<tr><td>${esc(p.name)}</td><td class="muted">${esc(p.url)}</td><td>${selected.has(p.url)?'✓ Đã chọn':'Chưa chọn'}</td></tr>`).join(''):`<tr><td colspan="3"><div class="empty">Bấm Quét Page ngay để lấy danh sách.</div></td></tr>`;
+  $('pg-status').innerHTML=s.pages_error?`<div class="note warn">${esc(s.pages_error)}</div>`:s.pages_checked_at?`<div class="note ok">Quét lúc ${esc(s.pages_checked_at.replace('T',' '))} · ${(s.available_pages||[]).length} Page</div>`:'';
 }
-function liveSchedule(){ if($('sc-prev')&&!$('sc-prev').textContent) previewCap(); }
+function liveSchedule(){
+  const box=$('sc-pages');if(box){
+    const list=S.available_pages||[], sig=JSON.stringify(list);
+    if(box.dataset.sig!==sig){const chosen=new Set((S.pages||[]).map(p=>p.url));
+      box.innerHTML=list.length?list.map(p=>`<div class="chk"><input type="checkbox" name="sc-page" id="page-${esc(p.url)}" value="${esc(p.url)}" ${chosen.has(p.url)?'checked':''}><label for="page-${esc(p.url)}">${esc(p.name)}<small class="muted"> · ${esc(p.url)}</small></label></div>`).join(''):'<div class="note warn">Chưa quét được Page. Đăng nhập rồi bấm Quét Page lại.</div>';
+      box.dataset.sig=sig;
+    }
+  }
+  if($('sc-prev')&&!$('sc-prev').textContent) previewCap();
+}
 function liveHistory(){
   const s=S; if(!$('hist-rows'))return;
   rows('hist-rows',(s.posts||[]).map(p=>{const tag=p.state==='posted'?'ok':p.state==='uncertain'?'warn':p.state==='failed'?'err':'wait';
-    return `<tr><td class="muted">${esc(p.at)}</td><td>${esc(p.title)}</td><td>${esc(p.page)}</td>
+    return `<tr><td class="muted">${esc(p.at)}</td><td>${esc(p.title)}</td><td>${esc(p.account_label)}<br><span class="muted">${esc(p.page)}</span></td>
       <td><span class="pill ${tag}">${esc(p.state_text)}</span></td><td class="muted">${esc(p.url||p.error||'')}</td>
       <td class="r" style="white-space:nowrap">${p.url?`<button class="btn sm" data-act="open_url" data-url="${esc(p.url)}">Mở</button>`:''}
         ${p.state==='uncertain'?`<button class="btn sm" data-act="lookup" data-key="${esc(p.key)}">Tìm lại</button><button class="btn sm" data-act="mark_posted" data-key="${esc(p.key)}">Đã đăng</button>`:''}
@@ -340,7 +367,7 @@ function liveHistory(){
   const log=$('log'); if(log){const b=log.scrollHeight-log.scrollTop-log.clientHeight<30;log.textContent=(s.log||[]).join('\n');if(b)log.scrollTop=log.scrollHeight;}
 }
 
-async function previewCap(){try{const r=await api('/api/action',{action:'preview_caption',caption:$('sc-cap').value,hashtags:$('sc-tags').value});if($('sc-prev'))$('sc-prev').textContent=r.preview||'(trống)';}catch(e){}}
+async function previewCap(){try{const r=await api('/api/action',{action:'preview_caption',account_id:S.selected_account_id,caption:$('sc-cap').value,hashtags:$('sc-tags').value});if($('sc-prev'))$('sc-prev').textContent=r.preview||'(trống)';}catch(e){}}
 
 const HANDLERS={
   go:(d)=>go(d.k),
@@ -357,24 +384,28 @@ const HANDLERS={
   start_render:()=>act('render_video',{file:$('rn-file').value,ratio:$('rn-ratio').value,fit:$('rn-fit').value}),
   login:()=>act('login',{browser:($('fb-browser')||{}).value}), check_account:()=>act('check_account'),
   open_browser:()=>act('open_browser'),
-  add_page:()=>act('add_page',{name:$('pg-name').value,url:$('pg-url').value}).then(()=>{$('pg-name').value='';$('pg-url').value='';}),
+  add_account:()=>act('add_account',{label:$('new-acc-label').value,browser:$('new-acc-browser').value}).then(()=>render()),
+  select_account:(d)=>act('select_account',{account_id:d.id}),
+  remove_account:(d)=>{if(confirm('Gỡ tài khoản khỏi tool? Hồ sơ trình duyệt và lịch sử đăng vẫn được giữ.'))return act('remove_account',{account_id:d.id});},
+  scan_pages:()=>act('scan_pages').then(()=>toast('Đã đưa lệnh quét Page vào hàng đợi. Xem kết quả tại Tài khoản & Page.')),
   remove_page:(d)=>act('remove_page',{url:d.url}),
   set_output:()=>act('set_output'),
   pick_frame:()=>act('pick_frame_dir'),
   save_render:()=>act('save_render',{enabled:$('st-ren').checked,ratio:$('st-ratio').value,fit:$('st-fit').value,frame_dir:$('st-frame').value}).then(r=>{if($('st-rstate'))$('st-rstate').textContent=r.found?'✓ Đã lưu':'⚠ Đã lưu — chưa thấy Frame Preview';}),
   save_advanced:()=>act('save_advanced',{reading:$('st-read').checked,show_browser:$('st-show').checked,keywords:$('st-kw').value}).then(()=>{if($('st-astate'))$('st-astate').textContent='✓ Đã lưu';}),
   read_now:()=>act('read_now'),
-  save_schedule:()=>act('save_schedule',{slots:$('sc-slots').value,caption:$('sc-cap').value,hashtags:$('sc-tags').value}).then(()=>{if($('sc-state'))$('sc-state').textContent='✓ Đã lưu';}),
+  save_schedule:()=>act('save_schedule',{slots:$('sc-slots').value,caption:$('sc-cap').value,hashtags:$('sc-tags').value,page_urls:[...document.querySelectorAll('input[name="sc-page"]:checked')].map(e=>e.value)}).then(()=>{if($('sc-state'))$('sc-state').textContent='✓ Đã lưu';}),
   lookup:(d)=>act('lookup',{key:d.key}),
   mark_posted:(d)=>{const url=prompt('Dán link bài trên Page:');if(url)act('mark_posted',{key:d.key,url});},
   allow_retry:(d)=>act('allow_retry',{key:d.key}),
   open_url:(d)=>{act('open',{path:d.url});},
 };
-document.addEventListener('click',(e)=>{const el=e.target.closest('[data-act]');if(!el)return;const h=HANDLERS[el.dataset.act];if(h){e.preventDefault();h(el.dataset);}});
-document.addEventListener('change',(e)=>{if(e.target.id==='st-q')act('set_quality',{quality:e.target.value});if(e.target.id==='fb-browser')act('set_browser',{browser:e.target.value});});
+document.addEventListener('click',(e)=>{const el=e.target.closest('[data-act]');if(!el)return;const h=HANDLERS[el.dataset.act];if(h){e.preventDefault();Promise.resolve(h(el.dataset)).catch(()=>{});}});
+document.addEventListener('change',(e)=>{if(e.target.id==='st-q')act('set_quality',{quality:e.target.value}).catch(()=>{});if(e.target.id==='fb-browser')act('set_browser',{browser:e.target.value}).catch(()=>{e.target.value=S.browser;});if(e.target.id==='account-select')act('select_account',{account_id:e.target.value}).catch(()=>{});});
 document.addEventListener('input',(e)=>{if(e.target.id==='sc-cap'||e.target.id==='sc-tags')previewCap();});
 
-async function refresh(){try{S=await api('/api/state');if(!$('main').innerHTML)render();else live();}catch(e){}}
+let refreshInFlight=false;
+async function refresh(){if(refreshInFlight)return;refreshInFlight=true;try{const prev=S.selected_account_id;S=await api('/api/state');if(!$('main').innerHTML||prev!==S.selected_account_id)render();else live();}catch(e){$('status').textContent='Không đọc được dữ liệu: '+e.message;}finally{refreshInFlight=false;}}
 buildNav(); go('overview'); refresh(); setInterval(refresh,1600);
 </script>
 </body>

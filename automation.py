@@ -3,6 +3,7 @@ theo khung giờ và lưu lịch sử. Mọi thao tác Facebook chạy trên m�
 from __future__ import annotations
 
 import json
+import copy
 import queue
 import random
 import re
@@ -15,31 +16,21 @@ import crawl  # Module 1 — tự cào + tải
 import render  # Module 2 — render (gọi Frame Preview)
 import upload  # Module 3 — đăng Facebook
 import ytcore
+import accounts
 
 STATE = ytcore.app_dir() / "automation.json"
 LOG_DIR = ytcore.app_dir() / "logs"
 DEFAULTS = {
     "channels": [],
-    "pages": [],  # [{"name", "url"}]
-    "slots": ["08:00", "12:00", "20:00"],
-    "caption": "{title}\n\n{hashtags}",
-    "hashtags": "",
-    "enabled": False,
     "scan_minutes": 15,
     "seen": {},  # kênh -> [video id]; lần quét đầu chỉ lấy mốc, không tải lịch sử kênh
-    "fired": {},  # khung giờ -> ngày đã chạy
     "posts": {},  # "videoId|pageUrl" -> {state, url, at, error, title, page, fails, file, rendered}
-    "account": None,
-    "keywords": [],
-    "reading": False,  # đọc tin theo từ khóa mỗi giờ, như bot bản web
-    "last_read": 0,
     "show_browser": False,  # hiện cửa sổ trình duyệt khi bot chạy, để dễ gỡ lỗi
     "render_enabled": False,  # Module 2: reframe bằng Frame Preview trước khi đăng
     "render_ratio": "9:16",
     "render_fit": "blur",  # blur = nền mờ, crop = cắt, pad = viền
     "frame_dir": "",  # thư mục Frame Preview; để trống thì tự dò
     "downloads": [],  # lịch sử tải: [{at, title, channel, url, file, status}]
-    "browser": "chrome",  # trình duyệt đăng Facebook: chrome | msedge | firefox (mỗi cái 1 hồ sơ riêng)
 }
 MAX_FAILS = 2
 MAX_DOWNLOAD_HISTORY = 500
@@ -110,13 +101,26 @@ def next_slot(slots: list[str], fired: dict, now: datetime) -> datetime | None:
     return min(times) if times else None
 
 
+def post_record(video_id: str, page: dict, posts: dict) -> tuple[str, dict | None]:
+    """Đối chiếu cả Page ID đã xác minh: đổi vanity URL sang ID không làm đăng trùng."""
+    key = f"{video_id}|{page['url']}"
+    if key in posts:
+        return key, posts[key]
+    page_id = accounts.page_key(page)
+    if page_id.isdigit():
+        for old_key, post in posts.items():
+            if old_key.startswith(video_id + "|") and str(post.get("page_id")) == page_id:
+                return old_key, post
+    return key, None
+
+
 def pick_video(library: list[dict], pages: list[dict], posts: dict) -> dict | None:
     """Video tải về sớm nhất còn Page chưa đăng. Bỏ qua cặp đã đăng, đang cần kiểm tra, hoặc lỗi quá MAX_FAILS lần."""
     for video in sorted(library, key=lambda v: v["modified"]):
         if not video.get("id"):
             continue
         for page in pages:
-            post = posts.get(f"{video['id']}|{page['url']}")
+            _, post = post_record(video["id"], page, posts)
             if not post or (post["state"] == "failed" and post.get("fails", 0) < MAX_FAILS):
                 return video
     return None
@@ -130,7 +134,19 @@ class Store:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             data = {}
-        self.data = {**json.loads(json.dumps(DEFAULTS)), **data}
+        if data and "accounts" not in data:
+            backup = path.with_name(path.stem + ".v8-backup.json")
+            if not backup.exists():
+                backup.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        self.data = accounts.migrate({**json.loads(json.dumps(DEFAULTS)), **data})
+
+    def account(self, account_id=None):
+        return accounts.account_for(self.data, account_id)
+
+    def update_account(self, account_id, **values):
+        with self.lock:
+            self.account(account_id).update(values)
+            self.save()
 
     def save(self):
         with self.lock:
@@ -164,6 +180,7 @@ class Engine(threading.Thread):
         self.last_scan = 0.0
         self.busy = False
         self.current: str | None = None  # việc đang làm, để giao diện hiển thị
+        self.current_account_id: str | None = None
         # Lần trước tắt app giữa chừng: đã bấm Đăng thì phải kiểm tra tay, chưa bấm thì cho thử lại.
         for post in store.data["posts"].values():
             if post.get("state") == "posting":
@@ -172,8 +189,17 @@ class Engine(threading.Thread):
                 post.update(state="failed", error="App bị tắt trước khi bấm Đăng.")
         store.save()
 
-    def browser(self):
-        return self.store.data.get("browser", "chrome")
+    def session(self, account):
+        session = upload.Session(self.store.data["show_browser"], account["browser"], account["id"])
+        try:
+            status = account.get("account") or {}
+            if not status.get("ok"):
+                raise upload.AuthRequired("Kiểm tra/đăng nhập tài khoản trước.")
+            session.assert_identity(status.get("id"))
+            return session
+        except Exception:
+            session.close()
+            raise
 
     def log(self, text: str):
         now = datetime.now()
@@ -200,46 +226,56 @@ class Engine(threading.Thread):
             finally:
                 self.busy = False
                 self.current = None
+                self.current_account_id = None
                 self.emit("changed", None)
 
     def handle(self, kind, *args):
         data = self.store.data
-        if kind == "login":
+        if kind in ("login", "open_browser"):
+            account = self.store.account(args[0])
+            self.current_account_id = account["id"]
             self.current = "login"
-            self.log("Đã mở cửa sổ Facebook: đăng nhập, xác minh nếu được hỏi, xong thì đóng cửa sổ.")
-            upload.login_until_closed(kind=self.browser())
-            return self.check_account()
-        if kind == "open_browser":
-            self.current = "login"
-            self.log("Đã mở trình duyệt của tài khoản. Kiểm tra/đăng nhập lại nếu cần rồi đóng cửa sổ.")
-            upload.login_until_closed(kind=self.browser())
-            return self.check_account()
+            self.log(f"[{account['label']}] Đã mở Facebook: đăng nhập, xác minh nếu được hỏi, xong thì đóng cửa sổ.")
+            upload.login_until_closed(kind=account["browser"], account_id=account["id"])
+            return self.check_account(account["id"])
         if kind == "check_account":
-            return self.check_account()
+            return self.check_account(args[0])
+        if kind == "scan_pages":
+            return self.scan_pages(args[0])
         if kind == "scan_now":
             return self.scan()
         if kind == "post_now":
-            return self.post_slot(manual=True)
+            return self.post_slot(args[0], manual=True)
         if kind == "lookup":
             return self.lookup(*args)
         if kind == "read_now":
-            return self.read()
+            return self.read(args[0])
         if kind != "tick":
             return
-        if data["reading"] and data["keywords"] and (data.get("account") or {}).get("ok") is not False \
-                and time.time() - data["last_read"] >= READ_EVERY:
-            self.read()
-        if not data["enabled"]:
-            return
-        now = datetime.now()
-        for slot in due_slots(data["slots"], data["fired"], now):
-            with self.store.lock:
-                data["fired"][slot] = now.date().isoformat()
-                self.store.save()
-            self.log(f"Tới khung giờ {slot}.")
-            self.post_slot()
-        if time.time() - self.last_scan >= data["scan_minutes"] * 60:
+        for account in list(data["accounts"]):
+            if self.stop_event.is_set():
+                return
+            if not (account.get("account") or {}).get("ok"):
+                continue
+            if not account["enabled"]:
+                continue
+            now = datetime.now()
+            for slot in due_slots(account["slots"], account["fired"], now):
+                with self.store.lock:
+                    account["fired"][slot] = now.date().isoformat()
+                    self.store.save()
+                self.log(f"[{account['label']}] Tới khung giờ {slot}.")
+                self.post_slot(account["id"])
+        if any(a["enabled"] for a in data["accounts"]) and time.time() - self.last_scan >= data["scan_minutes"] * 60:
             self.scan()
+        # Ưu tiên lịch đăng; mỗi vòng đọc một tài khoản để không chặn lịch của các tài khoản khác.
+        for account in list(data["accounts"]):
+            if self.stop_event.is_set():
+                return
+            if (account.get("account") or {}).get("ok") and account["reading"] and account["keywords"] \
+                    and time.time() - account["last_read"] >= READ_EVERY:
+                self.read(account["id"])
+                break
 
     def ensure_tools(self):
         if self.tools is None:
@@ -247,21 +283,55 @@ class Engine(threading.Thread):
         return self.tools
 
     # ---------- tài khoản ----------
-    def check_account(self):
+    def check_account(self, account_id):
+        account = self.store.account(account_id)
+        self.current_account_id = account_id
         self.current = "check"
         try:
-            with upload.Session(self.store.data["show_browser"], self.browser()) as s:
-                account = s.account()
-            self.store.data["account"] = {**account, "ok": True, "checked_at": datetime.now().isoformat(timespec="minutes")}
-            self.log(f"Đã đăng nhập Facebook: {account['name'] or account['id']}.")
-        except upload.AuthRequired:
-            self.store.data["account"] = {"ok": False, "checked_at": datetime.now().isoformat(timespec="minutes")}
-            self.log("Facebook chưa đăng nhập hoặc đang yêu cầu xác minh. Bấm Đăng nhập Facebook.")
-        self.store.save()
+            with upload.Session(self.store.data["show_browser"], account["browser"], account_id) as s:
+                identity = s.account()
+            previous_id = (account.get("account") or {}).get("id")
+            if previous_id and previous_id != identity["id"]:
+                raise upload.AuthRequired("Hồ sơ đã đăng nhập tài khoản khác. Thêm tài khoản mới để dùng phiên này.")
+            self.store.update_account(account_id, account={**identity, "ok": True,
+                                      "checked_at": datetime.now().isoformat(timespec="minutes")})
+            self.log(f"[{account['label']}] Đã đăng nhập Facebook: {identity['name'] or identity['id']}.")
+        except upload.AuthRequired as e:
+            self.auth_failed(account_id, str(e) or "Facebook chưa đăng nhập hoặc đang yêu cầu xác minh.")
+
+    def auth_failed(self, account_id, message):
+        account = self.store.account(account_id)
+        status = {**(account.get("account") or {}), "ok": False,
+                  "checked_at": datetime.now().isoformat(timespec="minutes"), "error": message}
+        self.store.update_account(account_id, account=status)
+        self.log(f"[{account['label']}] {message} Bấm Đăng nhập Facebook.")
+
+    def scan_pages(self, account_id):
+        account = self.store.account(account_id)
+        self.current, self.current_account_id = "pages", account_id
+        try:
+            with self.session(account) as s:
+                pages = s.managed_pages()
+            with self.store.lock:
+                # Chỉ đối chiếu Page đã chọn, không tự đưa Page mới vào lịch đăng.
+                wanted = {accounts.page_key(p) for p in account["pages"]}
+                selected = [p for p in pages if accounts.page_key(p) in wanted]
+                account.update(available_pages=pages, pages=selected,
+                               pages_checked_at=datetime.now().isoformat(timespec="minutes"), pages_error=None)
+                if not selected:
+                    account["enabled"] = False
+                self.store.save()
+            self.log(f"[{account['label']}] Đã quét {len(pages)} Page quản lý. Chọn Page ở Lịch đăng.")
+        except upload.AuthRequired as e:
+            self.auth_failed(account_id, str(e) or "Facebook yêu cầu đăng nhập lại.")
+        except Exception as e:
+            self.store.update_account(account_id, pages_error=str(e)[:300])
+            self.log(f"[{account['label']}] Quét Page lỗi: {e}")
 
     # ---------- đọc tin ----------
-    def read(self):
-        data = self.store.data
+    def read(self, account_id):
+        data = self.store.account(account_id)
+        self.current_account_id = account_id
         if not data["keywords"]:
             return self.log("Chưa có từ khóa để đọc tin.")
         with self.store.lock:
@@ -271,14 +341,11 @@ class Engine(threading.Thread):
         self.current = "read"
         self.log(f"Đọc tin theo từ khóa “{keyword}” (khoảng 1 phút)…")
         try:
-            with upload.Session(self.store.data["show_browser"], self.browser()) as s:
+            with self.session(data) as s:
                 s.read_feed(keyword, self.stop_event.wait)
             self.log("Đã tìm và cuộn đọc một lượt.")
-        except upload.AuthRequired:
-            with self.store.lock:
-                data["account"] = {"ok": False, "checked_at": datetime.now().isoformat(timespec="minutes")}
-                self.store.save()
-            self.log("Facebook yêu cầu đăng nhập/xác minh. Dừng đọc tin; bấm Đăng nhập Facebook.")
+        except upload.AuthRequired as e:
+            self.auth_failed(account_id, str(e) or "Facebook yêu cầu đăng nhập/xác minh. Dừng đọc tin.")
 
     # ---------- Module 1: cào + tải ----------
     def scan(self):
@@ -325,8 +392,13 @@ class Engine(threading.Thread):
         self.emit("library", None)
 
     # ---------- Module 2 + 3: render rồi đăng ----------
-    def post_slot(self, manual=False):
-        data = self.store.data
+    def post_slot(self, account_id, manual=False):
+        with self.store.lock:
+            account = copy.deepcopy(self.store.account(account_id))
+            data = {**self.store.data, **account}
+        self.current_account_id = account_id
+        if not (account.get("account") or {}).get("ok"):
+            return self.log(f"[{account['label']}] Kiểm tra/đăng nhập Facebook trước khi đăng.")
         pages = data["pages"]
         if not pages:
             return self.log("Chưa có Page để đăng.")
@@ -336,7 +408,7 @@ class Engine(threading.Thread):
             return self.log("Không còn video nào chưa đăng trong Thư viện.")
         caption = caption_for(data["caption"], video["title"], data["hashtags"], video.get("url") or "")
         self.current = "post"
-        self.log(f"Đăng “{video['title'][:60]}” lên {len(pages)} Page{' (thử ngay)' if manual else ''}.")
+        self.log(f"[{account['label']}] Đăng “{video['title'][:60]}” lên {len(pages)} Page{' (thử ngay)' if manual else ''}.")
 
         # Module 2 — render (nếu bật): reframe một lần, dùng cho mọi Page.
         upload_file = video["file"]
@@ -349,18 +421,20 @@ class Engine(threading.Thread):
                 self.log(f"Render lỗi: {str(e)[:150]}. Đăng bản gốc.")
 
         try:
-            session = upload.Session(self.store.data["show_browser"], self.browser())
+            session = self.session(account)
+        except upload.AuthRequired as e:
+            return self.auth_failed(account_id, str(e))
         except Exception as e:
             return self.log(f"Không mở được trình duyệt: {e}")
         try:
             for page in pages:
-                key = f"{video['id']}|{page['url']}"
-                post = data["posts"].get(key)
+                key, post = post_record(video["id"], page, data["posts"])
                 if post and (post["state"] in ("posted", "uncertain", "posting") or post.get("fails", 0) >= MAX_FAILS):
                     continue
                 self.store.set_post(key, state="preparing", title=video["title"], page=page["name"],
                                     at=datetime.now().isoformat(timespec="minutes"), error=None,
-                                    file=video["file"], rendered=rendered)
+                                    file=video["file"], rendered=rendered, account_id=account_id,
+                                    account_label=account["label"], page_url=page["url"], caption=caption)
                 self.emit("changed", None)
                 try:
                     page_id = session.switch_page(page)
@@ -372,10 +446,7 @@ class Engine(threading.Thread):
                 except upload.AuthRequired:
                     state = "uncertain" if data["posts"][key]["state"] == "posting" else "failed"
                     self.store.set_post(key, state=state, error="Facebook yêu cầu đăng nhập/xác minh lại.")
-                    with self.store.lock:
-                        data["account"] = {"ok": False, "checked_at": datetime.now().isoformat(timespec="minutes")}
-                        self.store.save()
-                    self.log("Facebook yêu cầu đăng nhập lại. Dừng đăng.")
+                    self.auth_failed(account_id, "Facebook yêu cầu đăng nhập lại. Dừng đăng.")
                     return
                 except upload.Uncertain as e:
                     self.store.set_post(key, state="uncertain", error=str(e))
@@ -394,13 +465,19 @@ class Engine(threading.Thread):
     def lookup(self, key: str):
         """Kiểm tra lại bài Cần kiểm tra trên Page (chỉ đọc)."""
         post = self.store.data["posts"].get(key)
-        page = next((p for p in self.store.data["pages"] if p["url"] == key.split("|", 1)[1]), None)
-        if not post or not page:
+        if not post:
             return
+        account = self.store.account(post.get("account_id") or "default")
+        page = next((p for p in account["pages"] + account["available_pages"] if p["url"] == key.split("|", 1)[1]), None)
+        if not page and post.get("page_url"):
+            page = {"name": post["page"], "url": post["page_url"]}
+        if not page:
+            raise ValueError("Page không còn trong tài khoản đã đăng bài.")
+        self.current_account_id = account["id"]
         self.current = "lookup"
         video = next((v for v in crawl.library(self.settings()[0]) if v["id"] == key.split("|")[0]), None)
-        caption = caption_for(self.store.data["caption"], post.get("title") or "", self.store.data["hashtags"], (video or {}).get("url") or "")
-        with upload.Session(self.store.data["show_browser"], self.browser()) as s:
+        caption = post.get("caption") or caption_for(account["caption"], post.get("title") or "", account["hashtags"], (video or {}).get("url") or "")
+        with self.session(account) as s:
             page_id = s.switch_page(page)
             url = s.lookup(page, page_id, caption)
         if url:

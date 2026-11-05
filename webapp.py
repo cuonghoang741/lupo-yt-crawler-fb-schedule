@@ -8,6 +8,7 @@ toàn bộ dữ liệu để vẽ, POST /api/action để thực hiện thao tá
 from __future__ import annotations
 
 import json
+import copy
 import os
 import queue
 import secrets
@@ -25,6 +26,7 @@ import crawl
 import fbpost
 import render as render_mod
 import ytcore
+import accounts
 
 ROOT = ytcore.app_dir()
 # webui.html nằm cạnh file nguồn, hoặc trong gói khi đóng .exe bằng PyInstaller.
@@ -35,7 +37,7 @@ STATES = {"posted": "Đã đăng", "uncertain": "Cần kiểm tra", "posting": "
           "preparing": "Đang chuẩn bị", "failed": "Lỗi"}
 ACTIVITY = {"login": "Đang chờ đăng nhập Facebook…", "check": "Đang kiểm tra tài khoản…",
             "scan": "Đang quét kênh YouTube…", "post": "Đang đăng bài…", "read": "Đang đọc tin…",
-            "lookup": "Đang tìm bài trên Page…"}
+            "lookup": "Đang tìm bài trên Page…", "pages": "Đang quét Page quản lý…"}
 
 
 def load_settings() -> dict:
@@ -48,12 +50,12 @@ def load_settings() -> dict:
 class Api:
     """Toàn bộ trạng thái + thao tác, dùng chung cho trang web."""
 
-    def __init__(self):
+    def __init__(self, store=None, start_engine=True):
         s = load_settings()
         self.output = s.get("output") or str(Path.home() / "Videos" / "YouTube")
         self.quality = s.get("quality") if s.get("quality") in QUALITIES else "1080p"
         self.logs: deque[str] = deque(maxlen=400)
-        self.store = automation.Store()
+        self.store = store or automation.Store()
         self.engine = automation.Engine(self.store, self._settings, self._emit)
         self.dialog = None  # main() gán hộp thoại chọn file của pywebview
         self.tools = None
@@ -62,7 +64,8 @@ class Api:
         self.dl_stop = threading.Event()
         self.dl_thread: threading.Thread | None = None
         self.render_job = {"status": "idle", "title": "", "output": "", "error": ""}
-        self.engine.start()
+        if start_engine:
+            self.engine.start()
 
     # ---------- nền ----------
     def _settings(self):
@@ -83,11 +86,20 @@ class Api:
             self.store.data.update(values)
             self.store.save()
 
+    def _account(self, req):
+        return self.store.account(req.get("account_id"))
+
+    def _update_account(self, req, **values):
+        self.store.update_account(self._account(req)["id"], **values)
+
+    def _queue(self, name, req):
+        self.engine.commands.put((name, self._account(req)["id"]))
+
     # ---------- dữ liệu cho giao diện ----------
     def _video_status(self, video, d):
         if not d["pages"] or not video.get("id"):
             return "Chờ đăng", "wait"
-        states = [(d["posts"].get(f"{video['id']}|{p['url']}") or {}).get("state") for p in d["pages"]]
+        states = [(automation.post_record(video["id"], p, d["posts"])[1] or {}).get("state") for p in d["pages"]]
         posted = states.count("posted")
         if "uncertain" in states:
             return "Cần kiểm tra", "warn"
@@ -101,7 +113,7 @@ class Api:
         return [
             {"key": "facebook", "title": "Đăng nhập Facebook", "desc": "Đăng nhập một lần bằng tài khoản quản lý Page.",
              "done": bool((d.get("account") or {}).get("ok"))},
-            {"key": "facebook", "title": "Thêm Page sẽ đăng", "desc": "Mỗi video được đăng lên tất cả Page trong danh sách.",
+            {"key": "schedule", "title": "Chọn Page sẽ đăng", "desc": "Quét Page tại Tài khoản & Page, rồi chọn ở Lịch đăng.",
              "done": bool(d["pages"])},
             {"key": "download", "title": "Tải video về Kho", "desc": "Dán link ở Tải thủ công để tải video về máy.",
              "done": bool(library)},
@@ -112,7 +124,10 @@ class Api:
         ]
 
     def snapshot(self):
-        d = self.store.data
+        with self.store.lock:
+            raw = copy.deepcopy(self.store.data)
+            selected = accounts.account_for(raw)
+            d = {**raw, **selected}
         library = crawl.library(Path(self.output))
         next_video = automation.pick_video(library, d["pages"], d["posts"]) if d["pages"] else None
         dl_map = {x["file"]: x.get("at", "") for x in d.get("downloads", []) if x.get("file")}
@@ -138,7 +153,15 @@ class Api:
             "output": self.output, "quality": self.quality,
             "enabled": d["enabled"], "busy": self.engine.busy,
             "activity": ACTIVITY.get(self.engine.current or ""),
+            "activity_account_id": self.engine.current_account_id,
+            "selected_account_id": selected["id"], "account_label": selected["label"],
+            "accounts": [{"id": a["id"], "label": a["label"], "browser": a["browser"],
+                          "ok": bool((a.get("account") or {}).get("ok")), "enabled": a["enabled"],
+                          "page_count": len(a["pages"])} for a in raw["accounts"]],
+            "enabled_accounts": sum(bool(a["enabled"]) for a in raw["accounts"]),
             "account": d.get("account"), "pages": d["pages"], "channels": d["channels"],
+            "available_pages": d["available_pages"], "pages_error": d.get("pages_error"),
+            "pages_checked_at": d.get("pages_checked_at"),
             "browser": fbpost.normalize_browser(d.get("browser")),
             "browsers": [{"id": k, "label": v["label"]} for k, v in fbpost.BROWSERS.items()],
             "seen": {k: len(v) for k, v in d["seen"].items()},
@@ -156,6 +179,7 @@ class Api:
             "jobs": self.jobs,
             "posts": [{"key": k, "at": (p.get("at") or "").replace("T", " "), "title": p.get("title", ""),
                        "page": p.get("page", ""), "state": p.get("state", ""), "state_text": STATES.get(p.get("state"), p.get("state", "")),
+                       "account_label": p.get("account_label") or next((a["label"] for a in raw["accounts"] if a["id"] == p.get("account_id")), "Tài khoản cũ"),
                        "url": p.get("url"), "error": p.get("error"), "file": p.get("rendered") or p.get("file")}
                       for k, p in posts[:300]],
             "posted_count": sum(p.get("state") == "posted" for p in d["posts"].values()),
@@ -188,6 +212,10 @@ class Api:
 
     def do_open(self, req):
         path = req.get("path")
+        if isinstance(path, str) and accounts.facebook_url(path):
+            import webbrowser
+            webbrowser.open(path)
+            return {"ok": True}
         if path and Path(path).exists():
             if os.name == "nt":
                 os.startfile(path)  # noqa: S606
@@ -202,41 +230,71 @@ class Api:
         return self.do_open({"path": path if Path(path).is_dir() else str(Path(path).parent)})
 
     # Facebook
+    def do_select_account(self, req):
+        account = self._account(req)
+        self._update(selected_account_id=account["id"])
+        return {"ok": True}
+
+    def do_add_account(self, req):
+        label = (req.get("label") or "").strip()
+        if not label or len(label) > 100:
+            raise ValueError("Nhập tên tài khoản, tối đa 100 ký tự.")
+        with self.store.lock:
+            if any(a["label"].casefold() == label.casefold() for a in self.store.data["accounts"]):
+                raise ValueError("Tên tài khoản này đã có. Chọn tên khác để dễ phân biệt.")
+            account = accounts.new_account(label, fbpost.normalize_browser(req.get("browser")))
+            self.store.data["accounts"].append(account)
+            self._update(selected_account_id=account["id"])
+        return {"ok": True, "account_id": account["id"]}
+
+    def do_remove_account(self, req):
+        with self.store.lock:
+            account = self._account(req)
+            if len(self.store.data["accounts"]) <= 1:
+                raise ValueError("Cần giữ ít nhất một tài khoản.")
+            if account["enabled"] or self.engine.busy or not self.engine.commands.empty():
+                raise ValueError("Tắt tự động và đợi các thao tác đang chạy/chờ xong rồi xóa tài khoản.")
+            self._update(accounts=[a for a in self.store.data["accounts"] if a["id"] != account["id"]])
+            if self.store.data["selected_account_id"] == account["id"]:
+                self._update(selected_account_id=self.store.data["accounts"][0]["id"])
+        return {"ok": True}  # giữ hồ sơ trên đĩa và lịch sử đăng, không xóa dữ liệu đăng nhập
+
     def do_set_browser(self, req):
         kind = fbpost.normalize_browser(req.get("browser"))
-        self._update(browser=kind)
+        account = self._account(req)
+        if account["browser"] == kind:
+            return {"ok": True}
+        if account["enabled"] or self.engine.busy or not self.engine.commands.empty():
+            raise ValueError("Tắt tự động và đợi thao tác hiện tại xong trước khi đổi trình duyệt.")
+        status = {**(account.get("account") or {}), "ok": False}
+        self._update_account(req, browser=kind, account=status)
         return {"ok": True}
 
     def do_login(self, req):
         if req.get("browser"):
-            self._update(browser=fbpost.normalize_browser(req.get("browser")))
-        self.engine.commands.put(("login",))
+            self.do_set_browser(req)
+        self._queue("login", req)
         return {"ok": True}
 
     def do_open_browser(self, req):
-        self.engine.commands.put(("open_browser",))
+        self._queue("open_browser", req)
         return {"ok": True}
 
     def do_check_account(self, req):
-        self.engine.commands.put(("check_account",))
+        self._queue("check_account", req)
         return {"ok": True}
 
-    def do_add_page(self, req):
-        name, url = (req.get("name") or "").strip(), (req.get("url") or "").strip()
-        if not name:
-            raise ValueError("Nhập tên Page.")
-        page = automation.parse_pages(f"{name} | {url}")[0]
-        if any(p["url"] == page["url"] for p in self.store.data["pages"]):
-            raise ValueError("Page này đã có trong danh sách.")
-        self._update(pages=self.store.data["pages"] + [page])
+    def do_scan_pages(self, req):
+        self._queue("scan_pages", req)
         return {"ok": True}
 
     def do_remove_page(self, req):
         url = req.get("url")
-        pages = [p for p in self.store.data["pages"] if p["url"] != url]
-        if self.store.data["enabled"] and not pages:
+        account = self._account(req)
+        pages = [p for p in account["pages"] if p["url"] != url]
+        if account["enabled"] and not pages:
             raise ValueError("Đang bật tự động nên cần giữ ít nhất một Page. Tắt tự động trước.")
-        self._update(pages=pages)
+        self._update_account(req, pages=pages)
         return {"ok": True}
 
     # Kênh
@@ -266,11 +324,16 @@ class Api:
         caption = (req.get("caption") or "").strip()
         if not caption:
             raise ValueError("Nội dung bài không được trống. Dùng {title} để lấy tiêu đề video.")
-        self._update(slots=slots, caption=caption, hashtags=(req.get("hashtags") or "").strip(), schedule_reviewed=True)
+        account = self._account(req)
+        pages = accounts.selected_pages(account, req.get("page_urls") or [])
+        if not pages:
+            raise ValueError("Chọn ít nhất một Page quản lý của tài khoản này.")
+        self._update_account(req, slots=slots, caption=caption, hashtags=(req.get("hashtags") or "").strip(),
+                             pages=pages, schedule_reviewed=True)
         return {"ok": True, "slots": slots}
 
     def do_preview_caption(self, req):
-        d = self.store.data
+        d = {**self.store.data, **self._account(req)}
         library = crawl.library(Path(self.output))
         nv = automation.pick_video(library, d["pages"], d["posts"]) if d["pages"] else None
         title = nv["title"] if nv else "Tiêu đề video mẫu"
@@ -279,23 +342,25 @@ class Api:
 
     # Tự động
     def do_toggle_enabled(self, req):
-        d = self.store.data
+        d = self._account(req)
         if d["enabled"]:
-            self._update(enabled=False)
+            self._update_account(req, enabled=False)
             return {"ok": True}
         if not d["pages"]:
             raise ValueError("Thêm ít nhất một Page trước.")
         if not d["slots"]:
             raise ValueError("Chọn ít nhất một giờ đăng trước.")
-        self._update(enabled=True)
-        if d["channels"]:
+        if not (d.get("account") or {}).get("ok"):
+            raise ValueError("Đăng nhập và kiểm tra tài khoản Facebook trước.")
+        self._update_account(req, enabled=True)
+        if self.store.data["channels"]:
             self.engine.commands.put(("scan_now",))
         return {"ok": True}
 
     def do_post_now(self, req):
-        if not self.store.data["pages"]:
+        if not self._account(req)["pages"]:
             raise ValueError("Thêm Page trước.")
-        self.engine.commands.put(("post_now",))
+        self._queue("post_now", req)
         return {"ok": True}
 
     def do_lookup(self, req):
@@ -304,7 +369,7 @@ class Api:
 
     def do_mark_posted(self, req):
         url = (req.get("url") or "").strip()
-        if not (url.startswith("https://") and "facebook.com" in url):
+        if not accounts.facebook_url(url):
             raise ValueError("Link phải là link bài Facebook (https://…facebook.com/…).")
         self.store.set_post(req.get("key"), state="posted", url=url, error=None)
         return {"ok": True}
@@ -334,11 +399,12 @@ class Api:
         keywords = automation.parse_keywords(req.get("keywords") or "")
         if req.get("reading") and not keywords:
             raise ValueError("Cần ít nhất một từ khóa để bật đọc tin.")
-        self._update(keywords=keywords, reading=bool(req.get("reading")), show_browser=bool(req.get("show_browser")))
+        self._update_account(req, keywords=keywords, reading=bool(req.get("reading")))
+        self._update(show_browser=bool(req.get("show_browser")))
         return {"ok": True}
 
     def do_read_now(self, req):
-        self.engine.commands.put(("read_now",))
+        self._queue("read_now", req)
         return {"ok": True}
 
     # Kho video
@@ -365,7 +431,7 @@ class Api:
                 continue
             vid = "local-" + uuid.uuid4().hex[:11]
             stem = ytcore.safe_stem(src.stem)[:120] + f" [{vid}]"
-            dest = folder / (stem + ".mp4")
+            dest = folder / (stem + src.suffix.lower())
             shutil.copyfile(src, dest)
             info = {"id": vid, "title": src.stem, "channel": "Video tải lên", "webpage_url": None,
                     "duration": None, "width": None, "height": None, "upload_date": None}
@@ -561,7 +627,7 @@ def main():
     for key in ("ALLOW_DOWNLOADS", "ALLOW_FILE_URLS", "OPEN_EXTERNAL_LINKS_IN_BROWSER"):
         webview.settings[key] = False
     webview.settings["SHOW_DEFAULT_MENUS"] = False
-    window = webview.create_window("YouTube → Facebook", server.url, width=1180, height=800,
+    window = webview.create_window("YouTube → Facebook · v9", server.url, width=1180, height=800,
                                    min_size=(900, 600), background_color="#0F1115")
 
     def dialog(kind):

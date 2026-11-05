@@ -1,10 +1,15 @@
 __pycache__/
 *.pyc
+.venv/
 fb-profile/
+logs/
 downloads/
+tools/
 dist/
 build/
 *.spec
-.venv/
+automation.json
+automation.*.json
+settings.json
 config.json
 state.json

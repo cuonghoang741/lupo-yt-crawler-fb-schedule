@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 import ytcore
+from accounts import facebook_url, safe_id
 
 BLOCKED = re.compile(r"^/(login|checkpoint|challenge|two_step_verification|recover|consent)(/|\.|$)")
 POST_LINK = re.compile(r"/(posts|videos|reel)/[^/?#]+|/(permalink|story)\.php$")
@@ -41,9 +42,13 @@ def normalize_browser(kind: str | None) -> str:
     return kind if kind in BROWSERS else DEFAULT_BROWSER
 
 
-def profile_dir(kind: str = DEFAULT_BROWSER) -> Path:
-    """Mỗi trình duyệt một thư mục hồ sơ riêng (fb-profile/<trình duyệt>) để không đụng nhau."""
-    d = ytcore.app_dir() / "fb-profile" / normalize_browser(kind)
+def profile_dir(kind: str = DEFAULT_BROWSER, account_id: str = "default") -> Path:
+    """Tách cả tài khoản lẫn engine; tài khoản cũ tiếp tục dùng thư mục v8."""
+    kind, account_id = normalize_browser(kind), safe_id(account_id)
+    root = ytcore.app_dir() / "fb-profile"
+    d = root / kind if account_id == "default" else root / "accounts" / account_id / kind
+    if account_id == "default" and kind == "chrome" and not d.exists() and (root / "Default").is_dir():
+        d = root  # hồ sơ Chrome từ các bản trước khi có bộ chọn trình duyệt
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -65,9 +70,9 @@ def chromium_path(channel: str) -> str | None:
     return exe
 
 
-def login_until_closed(timeout_s: int = 15 * 60, kind: str = DEFAULT_BROWSER) -> None:
+def login_until_closed(timeout_s: int = 15 * 60, kind: str = DEFAULT_BROWSER, account_id: str = "default") -> None:
     """Mở cửa sổ Facebook bằng đúng hồ sơ bot dùng để đăng; chờ người dùng đăng nhập rồi tự đóng cửa sổ."""
-    with Session(visible=True, kind=kind) as s:
+    with Session(visible=True, kind=kind, account_id=account_id) as s:
         s.page.goto("https://www.facebook.com/", wait_until="domcontentloaded")
         closed = []
         s.context.on("close", lambda *_: closed.append(True))
@@ -87,10 +92,11 @@ class Session:
     Ẩn bằng cách đặt cửa sổ ra ngoài màn hình chứ không dùng headless: headless tự báo "HeadlessChrome"
     trong user agent, dễ bị Facebook bắt xác minh, mà bot không sửa dấu vân tay trình duyệt."""
 
-    def __init__(self, visible: bool = False, kind: str = DEFAULT_BROWSER):
+    def __init__(self, visible: bool = False, kind: str = DEFAULT_BROWSER, account_id: str = "default"):
         from playwright.sync_api import sync_playwright
 
         self.kind = normalize_browser(kind)
+        self.account_id = account_id
         spec = BROWSERS[self.kind]
         if spec["engine"] == "chromium" and not chromium_path(spec["channel"]):
             raise RuntimeError(f"Không tìm thấy {spec['label']} trên máy. Cài {spec['label']} hoặc chọn trình duyệt khác.")
@@ -99,10 +105,10 @@ class Session:
             if spec["engine"] == "firefox":
                 # Firefox ẩn bằng headless (UA không lộ "Headless" như Chrome), hiện khi đăng nhập.
                 self.context = self._pw.firefox.launch_persistent_context(
-                    str(profile_dir(self.kind)), headless=not visible, viewport={"width": 1366, "height": 900})
+                    str(profile_dir(self.kind, account_id)), headless=not visible, viewport={"width": 1366, "height": 900})
             else:
                 self.context = self._pw.chromium.launch_persistent_context(
-                    str(profile_dir(self.kind)), channel=spec["channel"], headless=False,
+                    str(profile_dir(self.kind, account_id)), channel=spec["channel"], headless=False,
                     args=[] if visible else ["--window-position=-32000,-32000"], viewport={"width": 1366, "height": 900})
         except Exception as e:
             self._pw.stop()
@@ -149,14 +155,13 @@ class Session:
     # ---------- helpers ----------
     def check(self):
         url = urlparse(self.page.url)
-        if not (url.hostname or "").endswith("facebook.com") or BLOCKED.match(url.path):
+        if not facebook_url(self.page.url) or BLOCKED.match(url.path):
             raise AuthRequired()
         if self.page.query_selector('input[name="email"],input[name="pass"],form[action*="checkpoint"]'):
             raise AuthRequired()
 
     def goto(self, url: str):
-        target = urlparse(url)
-        if target.scheme != "https" or not (target.hostname or "").endswith("facebook.com"):
+        if not facebook_url(url):
             raise ValueError("Link Facebook không hợp lệ.")
         try:
             self.page.goto(url, wait_until="domcontentloaded", timeout=45_000)
@@ -211,6 +216,67 @@ class Session:
         title = self.page.title()
         match = re.match(r"^(?:\(\d+\)\s*)?(.+?)\s*\|\s*Facebook$", title)
         return {"id": user, "name": match.group(1) if match else None}
+
+    def assert_identity(self, expected: str | None):
+        """Dừng trước mọi thao tác nếu hồ sơ đã đổi sang một tài khoản khác."""
+        actual = self.cookie("c_user")
+        if not actual or (expected and expected != actual):
+            raise AuthRequired("Phiên Facebook khác tài khoản đã kết nối. Đăng nhập và kiểm tra lại.")
+
+    def managed_pages(self) -> list[dict]:
+        """Đọc danh sách Trang quản lý từ giao diện Facebook, không dùng Graph API.
+
+        Chỉ thu thập thẻ có thao tác quản lý/chuyển sang Trang hoặc nằm trong vùng
+        được gắn nhãn Trang bạn quản lý. Không lấy các Trang gợi ý hoặc đã thích.
+        Danh sách rỗng được báo cho người dùng, không đoán Page theo mọi link.
+        """
+        self.assert_identity(None)
+        self.goto("https://www.facebook.com/pages/?category=your_pages")
+        self.page.wait_for_selector('[role="main"]', timeout=20_000)
+        result = {}
+        for _ in range(8):
+            self.check()
+            found = self.page.evaluate(r"""() => {
+                const main = document.querySelector('[role="main"]');
+                const manage = /^(manage|manage page|switch now|switch into page|quản lý|quản lý trang|chuyển ngay|chuyển sang trang)$/i;
+                const owned = /^(pages you manage|your pages|trang bạn quản lý|các trang bạn quản lý|trang của bạn)$/i;
+                const reserved = /^(pages|profile|me|watch|reel|reels|groups|gaming|marketplace|help|settings|login|friends|notifications|messages|search|ads|business|bookmarks|home|photo|photos|videos|events|share|sharer\.php|l\.php)$/i;
+                const visible = e => !!(e.getBoundingClientRect().width && e.getBoundingClientRect().height);
+                const nameOf = a => (a.innerText || a.getAttribute('aria-label') || a.querySelector('img')?.alt || '').trim().replace(/\s+/g,' ');
+                const output = [];
+                for (const a of main.querySelectorAll('a[href]')) {
+                    if (!visible(a)) continue;
+                    let u; try { u = new URL(a.href); } catch { continue; }
+                    if (!(u.hostname === 'facebook.com' || u.hostname.endsWith('.facebook.com'))) continue;
+                    const path = u.pathname.replace(/^\/|\/$/g,'');
+                    const id = path === 'profile.php' ? u.searchParams.get('id') : /^\d+$/.test(path) ? path : null;
+                    if (!(id && /^\d+$/.test(id)) && (!/^[\w.]+$/.test(path) || reserved.test(path) || path.includes('.php'))) continue;
+                    const name = nameOf(a);
+                    if (!name || name.length > 160 || manage.test(name)) continue;
+                    const card = a.closest('article,[role="article"],li,[role="listitem"]');
+                    let verified = false, el = a;
+                    for (let depth=0; el && el !== main && depth < 5; depth++, el=el.parentElement) {
+                        const links = [...el.querySelectorAll('a[href]')];
+                        const controls = [...el.querySelectorAll('button,[role="button"],a')];
+                        // Không coi cả vùng có Trang gợi ý là một thẻ Page quản lý.
+                        const destinations = new Set(links.filter(l => nameOf(l) && !manage.test(nameOf(l))).map(l => {try {const v=new URL(l.href);return v.pathname+'?id='+(v.searchParams.get('id')||'');}catch{return l.href;}}));
+                        if (destinations.size === 1 && controls.some(b => visible(b) && manage.test((b.innerText || b.getAttribute('aria-label') || '').trim()))) verified = true;
+                        const h = el.querySelector('h1,h2,h3,[role="heading"]');
+                        if (h && owned.test(h.innerText.trim()) && ![...el.querySelectorAll('h2,h3,[role="heading"]')].some(x => /suggest|gợi ý|discover|khám phá/i.test(x.innerText))) verified = true;
+                        if (el === card) break;
+                    }
+                    if (verified) output.push({name, url: id ? 'https://www.facebook.com/profile.php?id='+id : 'https://www.facebook.com/'+path});
+                }
+                return output;
+            }""")
+            for page in found:
+                if page["url"] != "https://www.facebook.com/profile.php?id=" + (self.cookie("c_user") or ""):
+                    result[page["url"]] = page
+            self.page.evaluate("window.scrollBy(0, window.innerHeight)")
+            self.page.wait_for_timeout(400)
+        if not result:
+            raise RuntimeError("Chưa đọc được Page quản lý. Mở trình duyệt tài khoản, chuyển về trang cá nhân và kiểm tra mục Trang, rồi Quét Page lại.")
+        return list(result.values())
 
     # ---------- đọc tin ----------
     def read_feed(self, keyword: str, wait, rounds: int = 6, pause: float = 10) -> None:
