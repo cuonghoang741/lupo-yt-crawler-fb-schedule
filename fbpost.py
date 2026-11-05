@@ -105,11 +105,16 @@ class Session:
             if spec["engine"] == "firefox":
                 # Firefox ẩn bằng headless (UA không lộ "Headless" như Chrome), hiện khi đăng nhập.
                 self.context = self._pw.firefox.launch_persistent_context(
-                    str(profile_dir(self.kind, account_id)), headless=not visible, viewport={"width": 1366, "height": 900})
+                    str(profile_dir(self.kind, account_id)), headless=not visible, viewport={"width": 1366, "height": 900},
+                    firefox_user_prefs={"dom.webdriver.enabled": False, "useAutomationExtension": False})
             else:
+                # Bỏ cờ tự động của Playwright để trình duyệt trông như người dùng thật (không giả vân tay).
+                args = ["--disable-blink-features=AutomationControlled", "--no-first-run", "--no-default-browser-check"]
+                if not visible:
+                    args.append("--window-position=-32000,-32000")
                 self.context = self._pw.chromium.launch_persistent_context(
                     str(profile_dir(self.kind, account_id)), channel=spec["channel"], headless=False,
-                    args=[] if visible else ["--window-position=-32000,-32000"], viewport={"width": 1366, "height": 900})
+                    ignore_default_args=["--enable-automation"], args=args, viewport={"width": 1366, "height": 900})
         except Exception as e:
             self._pw.stop()
             low = str(e).lower()
@@ -118,6 +123,12 @@ class Session:
             if spec["engine"] == "firefox" and ("executable" in low or "download" in low or "install" in low):
                 raise RuntimeError("Chưa cài Firefox cho tool. Chạy lại setup.bat (tải Firefox của Playwright).")
             raise
+        # Ẩn navigator.webdriver trên mọi trang (dấu hiệu bot rõ nhất Facebook kiểm tra).
+        try:
+            self.context.add_init_script(
+                "Object.defineProperty(navigator,'webdriver',{get:()=>undefined});")
+        except Exception:
+            pass
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
         self.page.set_default_timeout(30_000)
         if not visible and spec["engine"] == "chromium":

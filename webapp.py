@@ -28,7 +28,6 @@ import fbpost
 import render as render_mod
 import ytcore
 import accounts
-from youtube_auth import YouTubeAuth
 
 ROOT = ytcore.app_dir()
 # webui.html nằm cạnh file nguồn, hoặc trong gói khi đóng .exe bằng PyInstaller.
@@ -62,7 +61,6 @@ class Api:
         self.dialog = None  # main() gán hộp thoại chọn file của pywebview
         self.tools = None
         self.queue_file = self.store.path.with_name("download-queue.json")
-        self.youtube = YouTubeAuth(self.store.path.parent / "youtube-session")
         self.jobs: list[dict] = []
         self.dl_paused, self.dl_error = False, ""
         self.dl_lock = threading.RLock()
@@ -217,7 +215,7 @@ class Api:
             "failed_downloads": [x for x in d.get("downloads", []) if str(x.get("status", "")).startswith("Lỗi")][:50],
             "render_job": self.render_job,
             "jobs": copy.deepcopy(self.jobs),
-            "youtube": self.youtube.snapshot(), "download_paused": self.dl_paused, "download_error": self.dl_error,
+            "download_paused": self.dl_paused, "download_error": self.dl_error,
             "posts": [{"key": k, "at": (p.get("at") or "").replace("T", " "), "title": p.get("title", ""),
                        "page": p.get("page", ""), "state": p.get("state", ""), "state_text": STATES.get(p.get("state"), p.get("state", "")),
                        "account_label": p.get("account_label") or next((a["label"] for a in raw["accounts"] if a["id"] == p.get("account_id")), "Tài khoản cũ"),
@@ -511,27 +509,6 @@ class Api:
         return {"ok": True}
 
     # Tải thủ công
-    def do_youtube_login(self, req):
-        self.youtube.login(req.get("browser") or "chrome")
-        self.do_pause_downloads({})
-        return {"ok": True}
-
-    def do_youtube_mode(self, req):
-        self.youtube.set_mode(req.get("mode"))
-        return {"ok": True}
-
-    def do_youtube_import_cookie(self, req):
-        if not self.dialog:
-            raise ValueError("Không mở được hộp thoại chọn file.")
-        picked = self.dialog("cookie")
-        if picked:
-            self.youtube.import_file(picked)
-        return {"ok": True}
-
-    def do_youtube_forget(self, req):
-        self.youtube.forget()
-        return {"ok": True}
-
     def do_import_links(self, req):
         if not self.dialog:
             raise ValueError("Không mở được hộp thoại chọn file.")
@@ -561,7 +538,7 @@ class Api:
             for it in items:
                 existing = next((j for j in self.jobs if j["url"] == it.url and j["status"] not in ("Xong", "Đã có")), None)
                 if existing:
-                    if existing["status"] in ("Lỗi", "Chờ xác minh"):
+                    if existing["status"] == "Lỗi":
                         existing.update(status="Chờ", progress="")
                     continue
                 self.jobs.append({"id": uuid.uuid4().hex, "url": it.url, "kind": it.kind,
@@ -573,11 +550,9 @@ class Api:
         return {"ok": True, "added": added}
 
     def do_retry_downloads(self, req):
-        if self.youtube.busy:
-            raise ValueError("Đóng cửa sổ YouTube sau khi đăng nhập rồi bấm Tiếp tục.")
         with self.dl_lock:
             for j in self.jobs:
-                if j["status"] in ("Lỗi", "Chờ xác minh") and (not req.get("id") or req["id"] == j["id"]):
+                if j["status"] == "Lỗi" and (not req.get("id") or req["id"] == j["id"]):
                     j.update(status="Chờ", progress="")
             self.dl_paused, self.dl_error = False, ""
             self._save_queue()
@@ -638,9 +613,9 @@ class Api:
         with self.dl_lock:
             if isinstance(error, ytcore.Cancelled):
                 job.update(status="Chờ", progress="")
-            elif isinstance(error, (ytcore.YoutubeAuthRequired, ytcore.YoutubeRateLimited)):
+            elif isinstance(error, ytcore.YoutubeRateLimited):
                 self.dl_paused, self.dl_error = True, str(error)
-                job.update(status="Chờ xác minh" if isinstance(error, ytcore.YoutubeAuthRequired) else "Lỗi", progress=str(error))
+                job.update(status="Lỗi", progress=str(error))
             else:
                 job.update(status="Lỗi", progress=str(error)[:300])
             self._save_queue()
@@ -690,7 +665,6 @@ class Api:
     def shutdown(self):
         self.dl_stop.set()
         self.engine.stop_event.set()
-        self.youtube.stop.set()
 
 
 # ---------- HTTP loopback có token (theo mẫu Frame Preview) ----------
@@ -785,7 +759,7 @@ def main():
     for key in ("ALLOW_DOWNLOADS", "ALLOW_FILE_URLS", "OPEN_EXTERNAL_LINKS_IN_BROWSER"):
         webview.settings[key] = False
     webview.settings["SHOW_DEFAULT_MENUS"] = False
-    window = webview.create_window("YouTube → Facebook · v10", server.url, width=1180, height=800,
+    window = webview.create_window("YouTube → Facebook · v11", server.url, width=1180, height=800,
                                    min_size=(900, 600), background_color="#0F1115")
 
     def dialog(kind):

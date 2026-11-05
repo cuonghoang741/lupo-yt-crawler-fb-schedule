@@ -102,7 +102,7 @@ tr:last-child td{border-bottom:none}
 </style>
 </head>
 <body>
-<nav id="side"><div class="brand"><b>YouTube → Facebook</b><span>Tải video và tự đăng Page · v10</span></div><div id="navbox"></div></nav>
+<nav id="side"><div class="brand"><b>YouTube → Facebook</b><span>Tải video và tự đăng Page · v11</span></div><div id="navbox"></div></nav>
 <div id="wrap">
   <div id="accountbar"><label for="account-select">Tài khoản Facebook</label><select id="account-select" class="inline"></select><span class="muted" id="account-summary"></span></div>
   <div id="banner"><div class="t" id="banner-t"></div><button class="btn primary" id="banner-b"></button></div>
@@ -162,15 +162,6 @@ function renderOverview(){
 }
 function renderDownload(){
   return page('Tải video thủ công','Dán link video hoặc link kênh (mỗi dòng một link). Video tải xong vào Kho video, chờ đăng.',`
-   <div class="card"><details id="yt-auth"><summary style="cursor:pointer;font-weight:600">Phiên YouTube <span class="muted" id="yt-auth-label"></span></summary>
-     <div class="desc" style="margin-top:10px">Nếu YouTube yêu cầu xác minh: đăng nhập trong cửa sổ riêng, mở YouTube rồi đóng cửa sổ. Hoặc nhập cookies.txt định dạng Netscape từ trình duyệt đã đăng nhập.</div>
-     <div class="row"><select id="yt-browser" class="inline">${(S.browsers||[]).map(b=>`<option value="${b.id}" ${b.id===(S.youtube||{}).browser?'selected':''}>${esc(b.label)}</option>`).join('')}</select>
-       <button class="btn primary" id="yt-login" data-act="youtube_login">Đăng nhập YouTube</button>
-       <button class="btn" data-act="youtube_import_cookie">Nhập cookies.txt</button></div>
-     <label class="fld">Dùng phiên để tải</label><select id="yt-mode">${((S.youtube||{}).modes||[]).map(m=>`<option value="${m.id}" ${m.id===(S.youtube||{}).mode?'selected':''}>${esc(m.label)}</option>`).join('')}</select>
-     <div class="muted" style="margin-top:8px;font-size:12px">Cookie Chrome/Edge có thể không đọc được do cơ chế mã hóa. Khi đó dùng Nhập cookies.txt. Cookie chỉ được lưu trên máy.</div>
-     <div id="yt-auth-message" class="note"></div><button class="btn sm" data-act="youtube_forget" style="margin-top:8px">Bỏ phiên dùng để tải</button>
-   </details></div>
    <div class="card"><h2>Link YouTube</h2>
      <textarea id="dl-text" placeholder="https://www.youtube.com/watch?v=...
 https://www.youtube.com/@tenkenh"></textarea>
@@ -322,16 +313,11 @@ function grouped(items,scope,cols,row){
     return `<tr class="group-row"><td colspan="${cols}"><button class="btn sm" data-act="toggle_channel" data-channel="${esc(k)}">${closed?'▸':'▾'} ${esc(label)} · ${list.length}</button></td></tr>`+(closed?'':list.map(row).join(''));});
 }
 function liveDownload(){
-  const s=S,y=s.youtube||{};if(!$('dl-rows'))return;
-  $('yt-auth-label').textContent='· '+((y.modes||[]).find(m=>m.id===y.mode)?.label||'Không đăng nhập');
-  $('yt-auth-message').textContent=y.message||'Video công khai có thể tải không cần đăng nhập. Nếu bị yêu cầu xác minh, tool tạm dừng để bạn xử lý.';
-  $('yt-login').disabled=!!y.busy;
-  if(document.activeElement!==$('yt-mode'))$('yt-mode').value=y.mode||'none';
+  const s=S;if(!$('dl-rows'))return;
   $('dl-notice').innerHTML=s.download_paused?`<div class="note warn">${esc(s.download_error||'Đã tạm dừng.')} Hàng đợi đã được lưu.</div>`:'';
   $('dl-retry').textContent=s.download_paused?'Tiếp tục / thử lại lỗi':'Thử lại mục lỗi';
-  if(s.download_paused&&s.jobs.some(j=>j.status==='Chờ xác minh'))$('yt-auth').open=true;
   const library=new Map((s.library||[]).map(v=>[v.url,v]));
-  rows('dl-rows',grouped(s.jobs||[],'dl',4,j=>{const v=library.get(j.url);return `<tr><td><div class="video-cell">${v?.thumbnail?`<img class="thumb" src="${esc(v.thumbnail)}" alt="" loading="lazy">`:''}<span>${esc(j.title)}</span></div></td><td>${esc(j.status)}</td><td class="error-cell">${esc(j.progress)}</td><td>${['Lỗi','Chờ xác minh'].includes(j.status)?`<button class="btn sm" data-act="retry_downloads" data-id="${esc(j.id)}">Thử lại</button>`:''}</td></tr>`;}),4,'Chưa có mục nào. Dán link hoặc import file rồi bấm Tải.');
+  rows('dl-rows',grouped(s.jobs||[],'dl',4,j=>{const v=library.get(j.url);return `<tr><td><div class="video-cell">${v?.thumbnail?`<img class="thumb" src="${esc(v.thumbnail)}" alt="" loading="lazy">`:''}<span>${esc(j.title)}</span></div></td><td>${esc(j.status)}</td><td class="error-cell">${esc(j.progress)}</td><td>${['Lỗi'].includes(j.status)?`<button class="btn sm" data-act="retry_downloads" data-id="${esc(j.id)}">Thử lại</button>`:''}</td></tr>`;}),4,'Chưa có mục nào. Dán link hoặc import file rồi bấm Tải.');
 }
 function liveLibrary(){
   const s=S; if(!$('lib-rows'))return;
@@ -410,9 +396,6 @@ const HANDLERS={
   pause_downloads:()=>act('pause_downloads'),
   import_links:()=>act('import_links').then(r=>toast('Đã thêm '+(r.added||0)+' nguồn từ file')),
   download_template:()=>act('download_template'),
-  youtube_login:()=>act('youtube_login',{browser:$('yt-browser').value}),
-  youtube_import_cookie:()=>act('youtube_import_cookie'),
-  youtube_forget:()=>act('youtube_forget'),
   toggle_channel:(d)=>{if(collapsedChannels.has(d.channel))collapsedChannels.delete(d.channel);else collapsedChannels.add(d.channel);live();},
   import:()=>act('import_videos').then(r=>toast('Đã thêm '+(r.added||0)+' video từ máy')),
   open:(d)=>act('open',{path:d.path}),
@@ -440,7 +423,7 @@ const HANDLERS={
   open_url:(d)=>{act('open',{path:d.url});},
 };
 document.addEventListener('click',(e)=>{const el=e.target.closest('[data-act]');if(!el)return;const h=HANDLERS[el.dataset.act];if(h){e.preventDefault();Promise.resolve(h(el.dataset)).catch(()=>{});}});
-document.addEventListener('change',(e)=>{if(e.target.id==='st-q')act('set_quality',{quality:e.target.value}).catch(()=>{});if(e.target.id==='yt-mode')act('youtube_mode',{mode:e.target.value}).catch(()=>{e.target.value=S.youtube.mode;});if(e.target.id==='fb-browser')act('set_browser',{browser:e.target.value}).catch(()=>{e.target.value=S.browser;});if(e.target.id==='account-select')act('select_account',{account_id:e.target.value}).catch(()=>{});});
+document.addEventListener('change',(e)=>{if(e.target.id==='st-q')act('set_quality',{quality:e.target.value}).catch(()=>{});if(e.target.id==='fb-browser')act('set_browser',{browser:e.target.value}).catch(()=>{e.target.value=S.browser;});if(e.target.id==='account-select')act('select_account',{account_id:e.target.value}).catch(()=>{});});
 document.addEventListener('input',(e)=>{if(e.target.id==='sc-cap'||e.target.id==='sc-tags')previewCap();});
 
 let refreshInFlight=false;

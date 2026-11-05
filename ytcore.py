@@ -206,7 +206,7 @@ def download_error(error: Exception) -> RuntimeError:
     low = message.lower()
     if any(s in low for s in ("sign in to confirm", "sign in to verify", "cookies are no longer valid",
                               "login required", "cookies have expired", "failed to decrypt", "cookie database", "dpapi")):
-        return YoutubeAuthRequired("YouTube yêu cầu đăng nhập/xác minh hoặc không đọc được cookie. Đăng nhập YouTube hoặc nhập cookies.txt rồi Thử lại mục lỗi.")
+        return RuntimeError("YouTube chặn video này (riêng tư, giới hạn tuổi, hoặc theo khu vực). Bỏ qua, thử video khác.")
     if "429" in low or "too many requests" in low or "rate limit" in low:
         return YoutubeRateLimited("YouTube đang giới hạn lượt tải. Đã tạm dừng hàng đợi; đợi một lúc rồi bấm Tiếp tục.")
     message = re.sub(r"https?://\S+", "[link]", message).replace("ERROR: ", "")
@@ -214,13 +214,7 @@ def download_error(error: Exception) -> RuntimeError:
 
 
 def base_options(tools: dict[str, str]) -> dict:
-    from youtube_auth import YouTubeAuth
-    try:
-        auth = YouTubeAuth().options()
-    except ValueError as e:
-        raise YoutubeAuthRequired(str(e)) from None
     return {
-        **auth,
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
