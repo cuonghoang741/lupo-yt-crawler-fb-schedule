@@ -22,6 +22,7 @@ from pathlib import Path
 
 import automation
 import crawl
+import fbpost
 import render as render_mod
 import ytcore
 
@@ -138,6 +139,8 @@ class Api:
             "enabled": d["enabled"], "busy": self.engine.busy,
             "activity": ACTIVITY.get(self.engine.current or ""),
             "account": d.get("account"), "pages": d["pages"], "channels": d["channels"],
+            "browser": fbpost.normalize_browser(d.get("browser")),
+            "browsers": [{"id": k, "label": v["label"]} for k, v in fbpost.BROWSERS.items()],
             "seen": {k: len(v) for k, v in d["seen"].items()},
             "slots": d["slots"], "caption": d["caption"], "hashtags": d["hashtags"],
             "schedule_reviewed": d.get("schedule_reviewed", False),
@@ -199,8 +202,19 @@ class Api:
         return self.do_open({"path": path if Path(path).is_dir() else str(Path(path).parent)})
 
     # Facebook
+    def do_set_browser(self, req):
+        kind = fbpost.normalize_browser(req.get("browser"))
+        self._update(browser=kind)
+        return {"ok": True}
+
     def do_login(self, req):
+        if req.get("browser"):
+            self._update(browser=fbpost.normalize_browser(req.get("browser")))
         self.engine.commands.put(("login",))
+        return {"ok": True}
+
+    def do_open_browser(self, req):
+        self.engine.commands.put(("open_browser",))
         return {"ok": True}
 
     def do_check_account(self, req):

@@ -27,31 +27,47 @@ class Uncertain(Exception):
     """Đã bấm Đăng nhưng chưa xác nhận được bài: không được tự đăng lại."""
 
 
-def profile_dir() -> Path:
-    d = ytcore.app_dir() / "fb-profile"
-    d.mkdir(exist_ok=True)
+# Trình duyệt hỗ trợ: Chrome/Edge chạy qua engine Chromium (dùng bản cài sẵn trên máy),
+# Firefox chạy qua engine Firefox đi kèm Playwright. Mỗi trình duyệt một thư mục hồ sơ riêng.
+BROWSERS = {
+    "chrome": {"label": "Google Chrome", "engine": "chromium", "channel": "chrome"},
+    "msedge": {"label": "Microsoft Edge", "engine": "chromium", "channel": "msedge"},
+    "firefox": {"label": "Mozilla Firefox", "engine": "firefox", "channel": None},
+}
+DEFAULT_BROWSER = "chrome"
+
+
+def normalize_browser(kind: str | None) -> str:
+    return kind if kind in BROWSERS else DEFAULT_BROWSER
+
+
+def profile_dir(kind: str = DEFAULT_BROWSER) -> Path:
+    """Mỗi trình duyệt một thư mục hồ sơ riêng (fb-profile/<trình duyệt>) để không đụng nhau."""
+    d = ytcore.app_dir() / "fb-profile" / normalize_browser(kind)
+    d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def browser() -> tuple[str, str] | None:
-    """(kênh Playwright, đường dẫn exe). Ưu tiên Chrome, không có thì Edge (luôn có trên Windows 10/11)."""
+def chromium_path(channel: str) -> str | None:
+    """Đường dẫn exe của Chrome/Edge trên máy, để báo lỗi rõ nếu thiếu."""
     if os.name == "nt":
         roots = [os.environ.get(k, "") for k in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")]
-        for channel, rel in (("chrome", r"Google\Chrome\Application\chrome.exe"), ("msedge", r"Microsoft\Edge\Application\msedge.exe")):
-            for root in roots:
-                if root and Path(root, rel).exists():
-                    return channel, str(Path(root, rel))
+        rel = {"chrome": r"Google\Chrome\Application\chrome.exe", "msedge": r"Microsoft\Edge\Application\msedge.exe"}[channel]
+        for root in roots:
+            if root and Path(root, rel).exists():
+                return str(Path(root, rel))
         return None
     if sys.platform == "darwin":
-        app = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-        return ("chrome", app) if Path(app).exists() else None
-    exe = shutil.which("google-chrome")
-    return ("chrome", exe) if exe else None
+        app = {"chrome": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+               "msedge": "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"}[channel]
+        return app if Path(app).exists() else None
+    exe = shutil.which("google-chrome" if channel == "chrome" else "microsoft-edge")
+    return exe
 
 
-def login_until_closed(timeout_s: int = 15 * 60) -> None:
+def login_until_closed(timeout_s: int = 15 * 60, kind: str = DEFAULT_BROWSER) -> None:
     """Mở cửa sổ Facebook bằng đúng hồ sơ bot dùng để đăng; chờ người dùng đăng nhập rồi tự đóng cửa sổ."""
-    with Session(visible=True) as s:
+    with Session(visible=True, kind=kind) as s:
         s.page.goto("https://www.facebook.com/", wait_until="domcontentloaded")
         closed = []
         s.context.on("close", lambda *_: closed.append(True))
@@ -71,26 +87,34 @@ class Session:
     Ẩn bằng cách đặt cửa sổ ra ngoài màn hình chứ không dùng headless: headless tự báo "HeadlessChrome"
     trong user agent, dễ bị Facebook bắt xác minh, mà bot không sửa dấu vân tay trình duyệt."""
 
-    def __init__(self, visible: bool = False):
+    def __init__(self, visible: bool = False, kind: str = DEFAULT_BROWSER):
         from playwright.sync_api import sync_playwright
 
-        found = browser()
-        if not found:
-            raise RuntimeError("Không tìm thấy Google Chrome hoặc Microsoft Edge trên máy.")
+        self.kind = normalize_browser(kind)
+        spec = BROWSERS[self.kind]
+        if spec["engine"] == "chromium" and not chromium_path(spec["channel"]):
+            raise RuntimeError(f"Không tìm thấy {spec['label']} trên máy. Cài {spec['label']} hoặc chọn trình duyệt khác.")
         self._pw = sync_playwright().start()
         try:
-            self.context = self._pw.chromium.launch_persistent_context(
-                str(profile_dir()), channel=found[0], headless=False,
-                args=[] if visible else ["--window-position=-32000,-32000"], viewport={"width": 1366, "height": 900},
-            )
+            if spec["engine"] == "firefox":
+                # Firefox ẩn bằng headless (UA không lộ "Headless" như Chrome), hiện khi đăng nhập.
+                self.context = self._pw.firefox.launch_persistent_context(
+                    str(profile_dir(self.kind)), headless=not visible, viewport={"width": 1366, "height": 900})
+            else:
+                self.context = self._pw.chromium.launch_persistent_context(
+                    str(profile_dir(self.kind)), channel=spec["channel"], headless=False,
+                    args=[] if visible else ["--window-position=-32000,-32000"], viewport={"width": 1366, "height": 900})
         except Exception as e:
             self._pw.stop()
-            if "ProcessSingleton" in str(e) or "already" in str(e).lower():
+            low = str(e).lower()
+            if "ProcessSingleton" in str(e) or "already" in low:
                 raise RuntimeError("Cửa sổ đăng nhập Facebook còn mở. Đóng nó rồi thử lại.")
+            if spec["engine"] == "firefox" and ("executable" in low or "download" in low or "install" in low):
+                raise RuntimeError("Chưa cài Firefox cho tool. Chạy lại setup.bat (tải Firefox của Playwright).")
             raise
         self.page = self.context.pages[0] if self.context.pages else self.context.new_page()
         self.page.set_default_timeout(30_000)
-        if not visible:
+        if not visible and spec["engine"] == "chromium":
             try:  # macOS không cho đặt cửa sổ ngoài màn hình, nên thu nhỏ thêm
                 cdp = self.context.new_cdp_session(self.page)
                 window = cdp.send("Browser.getWindowForTarget")["windowId"]
@@ -155,11 +179,24 @@ class Session:
                 found.append(el)
         return found
 
+    def tap(self, el, timeout: int = 8000) -> None:
+        """Click bền: cuộn tới nút, click nhanh; nếu Playwright coi là chưa hiện rõ thì click thẳng bằng DOM.
+
+        Facebook hay có lớp phủ/animation làm nút 'không visible' với actionability của Playwright dù bấm được."""
+        try:
+            el.scroll_into_view_if_needed(timeout=3000)
+        except Exception:
+            pass
+        try:
+            el.click(timeout=timeout)
+        except Exception:
+            el.evaluate("e => e.click()")  # dispatch click DOM, bỏ qua kiểm tra 'visible'
+
     def click(self, pattern: str, root: str = '[role="button"],button,a') -> bool:
         found = self.buttons(pattern, root)
         if not found:
             return False
-        found[-1].click()
+        self.tap(found[-1])
         return True
 
     # ---------- tài khoản ----------
@@ -217,7 +254,7 @@ class Session:
                 choices = self.buttons("^" + re.escape(page["name"]) + "$")
                 if len(choices) != 1:
                     raise RuntimeError(f"Không tìm thấy đúng một Page tên “{page['name']}” trong tài khoản.")
-                choices[0].click()
+                self.tap(choices[0])
             for _ in range(30):
                 time.sleep(0.5)
                 self.check()
@@ -346,14 +383,14 @@ class Session:
                 if not field:
                     raise RuntimeError("Không thấy ô mô tả ở bước đăng cuối; chưa bấm Đăng.")
                 if field.evaluate("el => el.value ?? el.innerText") != caption:
-                    field.click()
+                    self.tap(field)
                     field.evaluate("""el => { el.focus(); if (el instanceof HTMLTextAreaElement) el.select(); else {
                         const r = document.createRange(); r.selectNodeContents(el); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } }""")
                     p.keyboard.type(caption)
                 before_click()
                 committed = True
                 log("Đã bấm Đăng, đang chờ Facebook xác nhận…")
-                publish[0].click()
+                self.tap(publish[0])
                 break
             if self.click(r"^(Next|Tiếp|Tiếp theo)$", in_dialog):
                 time.sleep(1.5)

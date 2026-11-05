@@ -19,6 +19,8 @@ if not exist ".venv\Scripts\python.exe" (
   %PY% -m venv .venv || goto :error
 )
 ".venv\Scripts\python.exe" -m pip install -q --disable-pip-version-check --upgrade -r requirements.txt || goto :error
+rem Cai Firefox cho Playwright (de dang Facebook bang Firefox). Chrome/Edge dung ban cai san tren may.
+".venv\Scripts\python.exe" -m playwright install firefox >nul 2>nul
 start "" ".venv\Scripts\pythonw.exe" webapp.py
 exit /b
 

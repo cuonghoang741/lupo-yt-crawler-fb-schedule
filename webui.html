@@ -170,6 +170,7 @@ function renderLibrary(){
        <div><h2 style="margin:0">Video trong Kho</h2><div class="muted" id="lib-sum" style="font-size:12.5px"></div></div>
        <button class="btn" data-act="import">+ Thêm video từ máy</button>
      </div>
+     <div id="lib-render"></div>
      <div class="tbl-wrap"><div class="tbl-scroll"><table>
        <thead><tr><th>Tải lúc</th><th>Video</th><th>Kênh</th><th class="r">Dài</th><th class="r">Nặng</th><th>Đăng FB</th><th></th></tr></thead>
        <tbody id="lib-rows"></tbody></table></div></div>
@@ -195,7 +196,11 @@ function renderRender(){
 function renderFacebook(){
   return page('Tài khoản & Page','',`
    <div class="card"><h2>1. Tài khoản Facebook</h2><div id="fb-acc"></div>
-     <div class="row" style="margin-top:10px"><button class="btn primary" id="fb-login" data-act="login">Đăng nhập Facebook</button>
+     <label class="fld">Trình duyệt đăng nhập</label>
+     <div class="row"><select id="fb-browser" class="inline" style="min-width:210px"></select>
+       <span class="muted" style="font-size:12.5px">Mỗi trình duyệt có hồ sơ đăng nhập riêng (đổi trình duyệt là đăng nhập lại từ đầu).</span></div>
+     <div class="row" style="margin-top:12px"><button class="btn primary" id="fb-login" data-act="login">Đăng nhập Facebook</button>
+       <button class="btn" id="fb-open" data-act="open_browser">Mở lại trình duyệt tài khoản</button>
        <button class="btn" data-act="check_account">Kiểm tra lại</button></div></div>
    <div class="card"><h2>2. Page sẽ đăng</h2><div class="desc">Mỗi video đăng lên tất cả Page dưới đây. Tên Page phải giống tên hiển thị trên Facebook.</div>
      <div class="row"><input type="text" id="pg-name" placeholder="Tên Page" style="flex:1">
@@ -284,16 +289,21 @@ function liveOverview(){
 function liveDownload(){ rows('dl-rows', S.jobs.map(j=>`<tr><td>${esc(j.title)}</td><td>${esc(j.channel)}</td><td>${esc(j.status)}</td><td class="r">${esc(j.progress)}</td></tr>`), 4, 'Chưa có mục nào. Dán link rồi bấm Tải.'); }
 function liveLibrary(){
   const s=S; if(!$('lib-rows'))return;
+  const rendering=(s.render_job||{}).status==='running';
   rows('lib-rows', s.library.map(v=>`<tr>
      <td class="muted">${esc(v.at||'—')}</td><td>${esc(v.title)}</td><td>${esc(v.channel)}</td>
      <td class="r">${esc(v.duration)}</td><td class="r">${esc(v.size)}</td>
      <td><span class="pill ${v.tag}">${esc(v.post)}</span></td>
      <td class="r" style="white-space:nowrap">
        <button class="btn sm" data-act="open" data-path="${esc(v.file)}">Xem</button>
-       <button class="btn sm" data-act="render_this" data-file="${esc(v.file)}">Render</button>
+       ${v.rendered?`<button class="btn sm" data-act="open" data-path="${esc(v.rendered)}">Bản render</button>`:`<button class="btn sm" data-act="render_now" data-file="${esc(v.file)}" ${rendering?'disabled':''}>Render</button>`}
        <button class="btn sm" data-act="delete_video" data-file="${esc(v.file)}">Xóa</button></td></tr>`),
      7, '<span class="big">▦</span>Kho chưa có video. Sang Tải thủ công để tải về.');
   $('lib-sum').textContent=s.library.length+' video · '+s.waiting+' chờ đăng';
+  const lr=$('lib-render'); const rj=s.render_job||{};
+  if(lr){ if(rj.status==='running')lr.innerHTML=`<div class="note">⏳ Đang render “${esc(rj.title)}” (${esc(rj.ratio)} · ${esc(rj.fit)})… cứ để chạy, xong sẽ hiện nút “Bản render”.</div>`;
+    else if(rj.status==='error')lr.innerHTML=`<div class="note warn">Render lỗi: ${esc(rj.error)}</div>`;
+    else lr.innerHTML=''; }
   const fc=$('failed-card'); if(fc){const f=s.failed_downloads||[];fc.style.display=f.length?'':'none';
     if(f.length)$('failed-rows').innerHTML=f.map(x=>`<tr><td class="muted">${esc((x.at||'').replace('T',' '))}</td><td>${esc(x.title)}</td><td class="muted">${esc(x.status)}</td></tr>`).join('');}
 }
@@ -315,6 +325,7 @@ function liveFacebook(){
   else if(a){col='err';txt='Facebook cần đăng nhập/xác minh lại';hint='Bấm Đăng nhập Facebook.';}
   $('fb-acc').innerHTML=`<div style="font-weight:600;color:var(--${col})">${txt}</div><div class="muted" style="margin-top:3px">${hint}</div>`;
   $('fb-login').className='btn '+((a&&a.ok)?'':'primary');
+  const bsel=$('fb-browser'); if(bsel&&bsel.dataset.ready!=='1'){bsel.innerHTML=(s.browsers||[]).map(b=>`<option value="${b.id}">${esc(b.label)}</option>`).join('');bsel.value=s.browser||'chrome';bsel.dataset.ready='1';}
   $('pg-rows').innerHTML=(s.pages||[]).length?s.pages.map(p=>`<tr><td>${esc(p.name)}</td><td class="muted">${esc(p.url)}</td><td class="r"><button class="btn sm" data-act="remove_page" data-url="${esc(p.url)}">Xóa</button></td></tr>`).join(''):`<tr><td colspan="3"><div class="empty">Chưa có Page nào.</div></td></tr>`;
 }
 function liveSchedule(){ if($('sc-prev')&&!$('sc-prev').textContent) previewCap(); }
@@ -341,9 +352,11 @@ const HANDLERS={
   open:(d)=>act('open',{path:d.path}),
   open_folder:(d)=>act('open_folder',{path:d.path||S.output}),
   render_this:(d)=>{go('render');setTimeout(()=>{const s=$('rn-file');if(s)s.value=d.file;},80);},
+  render_now:(d)=>act('render_video',{file:d.file,ratio:(S.render||{}).ratio||'9:16',fit:(S.render||{}).fit||'blur'}).then(()=>toast('Đã bắt đầu render — xong sẽ có nút “Bản render”.')),
   delete_video:(d)=>{if(confirm('Xóa video này khỏi Kho? Không khôi phục được.'))act('delete_video',{file:d.file});},
   start_render:()=>act('render_video',{file:$('rn-file').value,ratio:$('rn-ratio').value,fit:$('rn-fit').value}),
-  login:()=>act('login'), check_account:()=>act('check_account'),
+  login:()=>act('login',{browser:($('fb-browser')||{}).value}), check_account:()=>act('check_account'),
+  open_browser:()=>act('open_browser'),
   add_page:()=>act('add_page',{name:$('pg-name').value,url:$('pg-url').value}).then(()=>{$('pg-name').value='';$('pg-url').value='';}),
   remove_page:(d)=>act('remove_page',{url:d.url}),
   set_output:()=>act('set_output'),
@@ -358,7 +371,7 @@ const HANDLERS={
   open_url:(d)=>{act('open',{path:d.url});},
 };
 document.addEventListener('click',(e)=>{const el=e.target.closest('[data-act]');if(!el)return;const h=HANDLERS[el.dataset.act];if(h){e.preventDefault();h(el.dataset);}});
-document.addEventListener('change',(e)=>{if(e.target.id==='st-q')act('set_quality',{quality:e.target.value});});
+document.addEventListener('change',(e)=>{if(e.target.id==='st-q')act('set_quality',{quality:e.target.value});if(e.target.id==='fb-browser')act('set_browser',{browser:e.target.value});});
 document.addEventListener('input',(e)=>{if(e.target.id==='sc-cap'||e.target.id==='sc-tags')previewCap();});
 
 async function refresh(){try{S=await api('/api/state');if(!$('main').innerHTML)render();else live();}catch(e){}}

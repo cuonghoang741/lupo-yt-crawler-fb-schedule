@@ -39,6 +39,7 @@ DEFAULTS = {
     "render_fit": "blur",  # blur = nền mờ, crop = cắt, pad = viền
     "frame_dir": "",  # thư mục Frame Preview; để trống thì tự dò
     "downloads": [],  # lịch sử tải: [{at, title, channel, url, file, status}]
+    "browser": "chrome",  # trình duyệt đăng Facebook: chrome | msedge | firefox (mỗi cái 1 hồ sơ riêng)
 }
 MAX_FAILS = 2
 MAX_DOWNLOAD_HISTORY = 500
@@ -171,6 +172,9 @@ class Engine(threading.Thread):
                 post.update(state="failed", error="App bị tắt trước khi bấm Đăng.")
         store.save()
 
+    def browser(self):
+        return self.store.data.get("browser", "chrome")
+
     def log(self, text: str):
         now = datetime.now()
         line = f"{now:%H:%M} {text}"
@@ -203,7 +207,12 @@ class Engine(threading.Thread):
         if kind == "login":
             self.current = "login"
             self.log("Đã mở cửa sổ Facebook: đăng nhập, xác minh nếu được hỏi, xong thì đóng cửa sổ.")
-            upload.login_until_closed()
+            upload.login_until_closed(kind=self.browser())
+            return self.check_account()
+        if kind == "open_browser":
+            self.current = "login"
+            self.log("Đã mở trình duyệt của tài khoản. Kiểm tra/đăng nhập lại nếu cần rồi đóng cửa sổ.")
+            upload.login_until_closed(kind=self.browser())
             return self.check_account()
         if kind == "check_account":
             return self.check_account()
@@ -241,7 +250,7 @@ class Engine(threading.Thread):
     def check_account(self):
         self.current = "check"
         try:
-            with upload.Session(self.store.data["show_browser"]) as s:
+            with upload.Session(self.store.data["show_browser"], self.browser()) as s:
                 account = s.account()
             self.store.data["account"] = {**account, "ok": True, "checked_at": datetime.now().isoformat(timespec="minutes")}
             self.log(f"Đã đăng nhập Facebook: {account['name'] or account['id']}.")
@@ -262,7 +271,7 @@ class Engine(threading.Thread):
         self.current = "read"
         self.log(f"Đọc tin theo từ khóa “{keyword}” (khoảng 1 phút)…")
         try:
-            with upload.Session(self.store.data["show_browser"]) as s:
+            with upload.Session(self.store.data["show_browser"], self.browser()) as s:
                 s.read_feed(keyword, self.stop_event.wait)
             self.log("Đã tìm và cuộn đọc một lượt.")
         except upload.AuthRequired:
@@ -340,7 +349,7 @@ class Engine(threading.Thread):
                 self.log(f"Render lỗi: {str(e)[:150]}. Đăng bản gốc.")
 
         try:
-            session = upload.Session(self.store.data["show_browser"])
+            session = upload.Session(self.store.data["show_browser"], self.browser())
         except Exception as e:
             return self.log(f"Không mở được trình duyệt: {e}")
         try:
@@ -391,7 +400,7 @@ class Engine(threading.Thread):
         self.current = "lookup"
         video = next((v for v in crawl.library(self.settings()[0]) if v["id"] == key.split("|")[0]), None)
         caption = caption_for(self.store.data["caption"], post.get("title") or "", self.store.data["hashtags"], (video or {}).get("url") or "")
-        with upload.Session(self.store.data["show_browser"]) as s:
+        with upload.Session(self.store.data["show_browser"], self.browser()) as s:
             page_id = s.switch_page(page)
             url = s.lookup(page, page_id, caption)
         if url:
