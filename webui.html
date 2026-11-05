@@ -87,6 +87,10 @@ tr:last-child td{border-bottom:none}
 .muted{color:var(--muted)}
 .chk{display:flex;align-items:center;gap:9px;margin:8px 0}
 .chk input{width:17px;height:17px;flex:none}
+.thumb{width:56px;height:36px;object-fit:cover;border-radius:5px;flex:none;background:var(--bd)}
+.video-cell{display:flex;align-items:center;gap:10px;min-width:210px}
+.group-row td{background:#F7F9FC;font-weight:600;padding:7px 10px}
+.error-cell{max-width:300px;overflow-wrap:anywhere;font-size:12px}
 #log{background:#0F1115;color:#C7CBD1;border-radius:10px;padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;height:150px;overflow-y:auto;white-space:pre-wrap;line-height:1.5}
 .note{background:var(--accent-soft);border-radius:9px;padding:9px 12px;font-size:12.5px;color:var(--accent-d);margin-top:8px}
 .note.ok{background:var(--ok-soft);color:var(--ok)}
@@ -98,7 +102,7 @@ tr:last-child td{border-bottom:none}
 </style>
 </head>
 <body>
-<nav id="side"><div class="brand"><b>YouTube → Facebook</b><span>Tải video và tự đăng Page · v9</span></div><div id="navbox"></div></nav>
+<nav id="side"><div class="brand"><b>YouTube → Facebook</b><span>Tải video và tự đăng Page · v10</span></div><div id="navbox"></div></nav>
 <div id="wrap">
   <div id="accountbar"><label for="account-select">Tài khoản Facebook</label><select id="account-select" class="inline"></select><span class="muted" id="account-summary"></span></div>
   <div id="banner"><div class="t" id="banner-t"></div><button class="btn primary" id="banner-b"></button></div>
@@ -110,6 +114,7 @@ tr:last-child td{border-bottom:none}
 <script nonce="__NONCE__">
 const TOKEN=location.hash.slice(1);
 let S={}, view="overview";
+const collapsedChannels=new Set();
 const $=(id)=>document.getElementById(id);
 const esc=(s)=>(s==null?"":String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 async function api(path,body){
@@ -157,13 +162,23 @@ function renderOverview(){
 }
 function renderDownload(){
   return page('Tải video thủ công','Dán link video hoặc link kênh (mỗi dòng một link). Video tải xong vào Kho video, chờ đăng.',`
+   <div class="card"><details id="yt-auth"><summary style="cursor:pointer;font-weight:600">Phiên YouTube <span class="muted" id="yt-auth-label"></span></summary>
+     <div class="desc" style="margin-top:10px">Nếu YouTube yêu cầu xác minh: đăng nhập trong cửa sổ riêng, mở YouTube rồi đóng cửa sổ. Hoặc nhập cookies.txt định dạng Netscape từ trình duyệt đã đăng nhập.</div>
+     <div class="row"><select id="yt-browser" class="inline">${(S.browsers||[]).map(b=>`<option value="${b.id}" ${b.id===(S.youtube||{}).browser?'selected':''}>${esc(b.label)}</option>`).join('')}</select>
+       <button class="btn primary" id="yt-login" data-act="youtube_login">Đăng nhập YouTube</button>
+       <button class="btn" data-act="youtube_import_cookie">Nhập cookies.txt</button></div>
+     <label class="fld">Dùng phiên để tải</label><select id="yt-mode">${((S.youtube||{}).modes||[]).map(m=>`<option value="${m.id}" ${m.id===(S.youtube||{}).mode?'selected':''}>${esc(m.label)}</option>`).join('')}</select>
+     <div class="muted" style="margin-top:8px;font-size:12px">Cookie Chrome/Edge có thể không đọc được do cơ chế mã hóa. Khi đó dùng Nhập cookies.txt. Cookie chỉ được lưu trên máy.</div>
+     <div id="yt-auth-message" class="note"></div><button class="btn sm" data-act="youtube_forget" style="margin-top:8px">Bỏ phiên dùng để tải</button>
+   </details></div>
    <div class="card"><h2>Link YouTube</h2>
      <textarea id="dl-text" placeholder="https://www.youtube.com/watch?v=...
 https://www.youtube.com/@tenkenh"></textarea>
-     <div class="row" style="margin-top:10px"><button class="btn primary" data-act="start_download">↓ Tải về Kho video</button></div>
+     <div class="row" style="margin-top:10px"><button class="btn primary" data-act="start_download">↓ Tải về Kho video</button>
+       <button class="btn" data-act="import_links">Import CSV / TXT</button><button class="btn" data-act="download_template">File mẫu</button></div>
    </div>
-   <div class="card"><h2>Hàng đợi tải</h2><div class="row end" style="margin-bottom:8px"><button class="btn sm" data-act="clear_done">Dọn mục đã xong</button></div>
-     <div class="tbl-wrap"><div class="tbl-scroll"><table><thead><tr><th>Video</th><th>Kênh</th><th>Trạng thái</th><th class="r">Tiến độ</th></tr></thead><tbody id="dl-rows"></tbody></table></div></div>
+   <div class="card"><h2>Hàng đợi tải</h2><div id="dl-notice"></div><div class="row end" style="margin-bottom:8px"><button class="btn sm" data-act="pause_downloads">Tạm dừng</button><button class="btn sm" data-act="retry_downloads" id="dl-retry">Thử lại mục lỗi</button><button class="btn sm" data-act="clear_done">Dọn mục đã xong</button></div>
+     <div class="tbl-wrap"><div class="tbl-scroll"><table><thead><tr><th>Video</th><th>Trạng thái</th><th>Tiến độ / thông báo</th><th></th></tr></thead><tbody id="dl-rows"></tbody></table></div></div>
    </div>`);
 }
 function renderLibrary(){
@@ -301,12 +316,28 @@ function liveOverview(){
     <div class="st ${st.done?'done':''}"><b>${esc(st.title)}</b><small>${esc(st.desc)}</small></div>
     ${i===4?`<button class="btn sm ${st.done?'':'primary'}" data-act="toggle">${st.done?'Tắt':'Bật'}</button>`:`<button class="btn sm ${i===todo?'primary':''}" data-act="go" data-k="${st.key}">${st.done?'Sửa':'Làm'}</button>`}</div>`).join('');
 }
-function liveDownload(){ rows('dl-rows', S.jobs.map(j=>`<tr><td>${esc(j.title)}</td><td>${esc(j.channel)}</td><td>${esc(j.status)}</td><td class="r">${esc(j.progress)}</td></tr>`), 4, 'Chưa có mục nào. Dán link rồi bấm Tải.'); }
+function grouped(items,scope,cols,row){
+  const groups=new Map();for(const item of items){const k=item.channel||(item.kind==='channel'?'Nguồn kênh đang quét':'Video lẻ');if(!groups.has(k))groups.set(k,[]);groups.get(k).push(item);}
+  return [...groups].map(([label,list])=>{const k=scope+':'+label,closed=collapsedChannels.has(k);
+    return `<tr class="group-row"><td colspan="${cols}"><button class="btn sm" data-act="toggle_channel" data-channel="${esc(k)}">${closed?'▸':'▾'} ${esc(label)} · ${list.length}</button></td></tr>`+(closed?'':list.map(row).join(''));});
+}
+function liveDownload(){
+  const s=S,y=s.youtube||{};if(!$('dl-rows'))return;
+  $('yt-auth-label').textContent='· '+((y.modes||[]).find(m=>m.id===y.mode)?.label||'Không đăng nhập');
+  $('yt-auth-message').textContent=y.message||'Video công khai có thể tải không cần đăng nhập. Nếu bị yêu cầu xác minh, tool tạm dừng để bạn xử lý.';
+  $('yt-login').disabled=!!y.busy;
+  if(document.activeElement!==$('yt-mode'))$('yt-mode').value=y.mode||'none';
+  $('dl-notice').innerHTML=s.download_paused?`<div class="note warn">${esc(s.download_error||'Đã tạm dừng.')} Hàng đợi đã được lưu.</div>`:'';
+  $('dl-retry').textContent=s.download_paused?'Tiếp tục / thử lại lỗi':'Thử lại mục lỗi';
+  if(s.download_paused&&s.jobs.some(j=>j.status==='Chờ xác minh'))$('yt-auth').open=true;
+  const library=new Map((s.library||[]).map(v=>[v.url,v]));
+  rows('dl-rows',grouped(s.jobs||[],'dl',4,j=>{const v=library.get(j.url);return `<tr><td><div class="video-cell">${v?.thumbnail?`<img class="thumb" src="${esc(v.thumbnail)}" alt="" loading="lazy">`:''}<span>${esc(j.title)}</span></div></td><td>${esc(j.status)}</td><td class="error-cell">${esc(j.progress)}</td><td>${['Lỗi','Chờ xác minh'].includes(j.status)?`<button class="btn sm" data-act="retry_downloads" data-id="${esc(j.id)}">Thử lại</button>`:''}</td></tr>`;}),4,'Chưa có mục nào. Dán link hoặc import file rồi bấm Tải.');
+}
 function liveLibrary(){
   const s=S; if(!$('lib-rows'))return;
   const rendering=(s.render_job||{}).status==='running';
-  rows('lib-rows', s.library.map(v=>`<tr>
-     <td class="muted">${esc(v.at||'—')}</td><td>${esc(v.title)}</td><td>${esc(v.channel)}</td>
+  rows('lib-rows', grouped(s.library,'lib',7,v=>`<tr>
+     <td class="muted">${esc(v.at||'—')}</td><td><div class="video-cell">${v.thumbnail?`<img class="thumb" src="${esc(v.thumbnail)}" alt="" loading="lazy">`:''}<span>${esc(v.title)}</span></div></td><td>${esc(v.channel)}</td>
      <td class="r">${esc(v.duration)}</td><td class="r">${esc(v.size)}</td>
      <td><span class="pill ${v.tag}">${esc(v.post)}</span></td>
      <td class="r" style="white-space:nowrap">
@@ -375,6 +406,14 @@ const HANDLERS={
   toggle:()=>act('toggle_enabled'),
   start_download:()=>{const t=$('dl-text');act('start_download',{text:t.value}).then(()=>t.value='');},
   clear_done:()=>act('clear_done'),
+  retry_downloads:(d)=>act('retry_downloads',{id:d.id}),
+  pause_downloads:()=>act('pause_downloads'),
+  import_links:()=>act('import_links').then(r=>toast('Đã thêm '+(r.added||0)+' nguồn từ file')),
+  download_template:()=>act('download_template'),
+  youtube_login:()=>act('youtube_login',{browser:$('yt-browser').value}),
+  youtube_import_cookie:()=>act('youtube_import_cookie'),
+  youtube_forget:()=>act('youtube_forget'),
+  toggle_channel:(d)=>{if(collapsedChannels.has(d.channel))collapsedChannels.delete(d.channel);else collapsedChannels.add(d.channel);live();},
   import:()=>act('import_videos').then(r=>toast('Đã thêm '+(r.added||0)+' video từ máy')),
   open:(d)=>act('open',{path:d.path}),
   open_folder:(d)=>act('open_folder',{path:d.path||S.output}),
@@ -401,7 +440,7 @@ const HANDLERS={
   open_url:(d)=>{act('open',{path:d.url});},
 };
 document.addEventListener('click',(e)=>{const el=e.target.closest('[data-act]');if(!el)return;const h=HANDLERS[el.dataset.act];if(h){e.preventDefault();Promise.resolve(h(el.dataset)).catch(()=>{});}});
-document.addEventListener('change',(e)=>{if(e.target.id==='st-q')act('set_quality',{quality:e.target.value}).catch(()=>{});if(e.target.id==='fb-browser')act('set_browser',{browser:e.target.value}).catch(()=>{e.target.value=S.browser;});if(e.target.id==='account-select')act('select_account',{account_id:e.target.value}).catch(()=>{});});
+document.addEventListener('change',(e)=>{if(e.target.id==='st-q')act('set_quality',{quality:e.target.value}).catch(()=>{});if(e.target.id==='yt-mode')act('youtube_mode',{mode:e.target.value}).catch(()=>{e.target.value=S.youtube.mode;});if(e.target.id==='fb-browser')act('set_browser',{browser:e.target.value}).catch(()=>{e.target.value=S.browser;});if(e.target.id==='account-select')act('select_account',{account_id:e.target.value}).catch(()=>{});});
 document.addEventListener('input',(e)=>{if(e.target.id==='sc-cap'||e.target.id==='sc-tags')previewCap();});
 
 let refreshInFlight=false;

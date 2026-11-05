@@ -1,9 +1,9 @@
-# YouTube → Facebook cho Windows · v9
+# YouTube → Facebook cho Windows · v10
 
 Tool chạy trên máy: tải video YouTube về **Kho video**, render lại (tùy chọn) rồi tự đăng lên Page Facebook theo giờ. Giao diện là một trang web nhỏ chạy trong cửa sổ ứng dụng (pywebview), menu bên trái chia theo nhóm; dải xanh trên cùng luôn ghi **Bước tiếp theo** cho tới khi cài đặt xong.
 
 - **Tổng quan**: bật/tắt tự động, lượt đăng tiếp theo, video sẽ đăng, 5 bước cài đặt.
-- **YouTube → Tải thủ công**: dán link video/kênh để tải về. **Kho video**: video đã tải (gộp luôn lịch sử tải), cột **Đăng FB** cho biết video nào đã đăng / chờ đăng / đăng tiếp theo; có nút **Thêm video từ máy**. **Render**: chọn một video trong Kho và render lại sang khung hình khác.
+- **YouTube → Tải thủ công**: dán link video/kênh, import CSV/TXT/TSV hoặc lấy file mẫu; hàng đợi nhóm theo kênh, có tạm dừng/thử lại và lưu khi đóng app. **Phiên YouTube**: đăng nhập tay bằng Chrome/Edge/Firefox hoặc nhập cookies.txt. **Kho video**: nhóm kênh có thể thu gọn, kèm thumbnail, tiêu đề gốc và trạng thái đăng FB; có nút **Thêm video từ máy**. **Render**: chọn video và render lại sang khung hình khác.
 - **Facebook → Tài khoản & Page**: nhiều tài khoản, chọn Chrome/Edge/Firefox, đăng nhập tay và quét Page quản lý. **Lịch đăng & nội dung** lưu riêng theo tài khoản và các Page được tick. **Lịch sử đăng** ghi cả tài khoản, Page, link bài và nhật ký.
 - **Cài đặt**: thư mục Kho video, chất lượng, render tự động trước khi đăng, đọc tin, hiện trình duyệt khi gỡ lỗi.
 
@@ -17,6 +17,7 @@ Code chia theo đúng pipeline, mỗi bước một module (giao diện ở `web
 
 `automation.py` là bộ điều phối nối ba module theo khung giờ. Khi bật render, pipeline chạy: tải → render → đăng.
 `accounts.py` quản lý cấu hình từng tài khoản và chuyển dữ liệu từ v8. `webapp.py` là bridge local có token; `webui.html` là giao diện.
+`youtube_auth.py` quản lý phiên YouTube riêng trên máy. `ytcore.py` dùng phiên đó cho cả quét kênh lẫn tải video; không dùng cookie Facebook.
 
 ### Lịch sử (lưu ra file, mở lại app vẫn còn)
 
@@ -29,6 +30,25 @@ Code chia theo đúng pipeline, mỗi bước một module (giao diện ở `web
 1. Giải nén zip (chuột phải → Extract All), đừng chạy trong file zip.
 2. Bấm đúp `setup.bat`. Lần đầu tool tự cài Python (nếu thiếu), yt-dlp, Playwright và pywebview; lần tải đầu tự tải ffmpeg và deno. Giao diện mở trong cửa sổ ứng dụng (WebView2 có sẵn trên Windows 10/11).
 3. Chọn Google Chrome, Microsoft Edge (dùng bản cài trên máy) hoặc Firefox (bản Playwright được `setup.bat` tải riêng).
+
+## Tải YouTube
+
+- Dán link video hoặc kênh (mỗi dòng một link), hoặc **Import CSV / TXT**. File CSV/TSV có cột `url`, `link` hoặc `youtube_url`; nút **File mẫu** lưu một CSV để điền link. Link kênh được quét thành danh sách video công khai, gồm Shorts; bỏ live/sắp phát.
+- Video giữ tiêu đề gốc trong metadata và tên file phù hợp giới hạn Windows, có thumbnail JPG. Tải từng video một; FFmpeg ghép hình/tiếng và remux MP4. Hàng đợi và Kho video nhóm theo kênh, bấm ▾/▸ để mở/thu gọn.
+- Khi gặp **Sign in to confirm you’re not a bot** hoặc giới hạn 429, tool tạm dừng, giữ các mục còn lại. Không tự thử liên tục hoặc giải CAPTCHA. **Tiếp tục / thử lại lỗi** đưa các mục lỗi vào hàng chờ; có thể thử lại từng video riêng.
+
+### Khi YouTube yêu cầu đăng nhập/xác minh
+
+1. Mở **Tải thủ công → Phiên YouTube**, chọn trình duyệt và **Đăng nhập YouTube**.
+2. Đăng nhập/xác minh bằng tay, mở lại `youtube.com` trong cửa sổ đó, rồi đóng cửa sổ khi xong. Tool lưu cookie YouTube từ hồ sơ riêng và chuyển sang **Phiên đã lưu / cookies.txt**.
+3. Nếu Google không cho đăng nhập trong trình duyệt đó, dùng trình duyệt thường đã đăng nhập và xuất cookie của `youtube.com` ra **cookies.txt định dạng Netscape**; bấm **Nhập cookies.txt**. Không nhận JSON hoặc chuỗi Cookie Header. Xem [hướng dẫn chính thức của yt-dlp](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp).
+4. Bấm **Tiếp tục / thử lại lỗi**. Nếu nhập lại link kênh từ bản cũ, danh sách đã tải `.da-tai.txt` giúp bỏ qua các video đã có.
+
+Cũng có thể chọn **Cookie Firefox/Chrome/Edge trên máy** để yt-dlp đọc phiên trình duyệt đã đăng nhập. Khi không đọc được do khóa database/mã hóa, dùng cách nhập cookies.txt. Đăng nhập/cookie không đảm bảo YouTube sẽ chấp nhận mọi lượt tải; gặp yêu cầu xác minh mới thì tool lại dừng để người dùng xử lý.
+
+Cookie chỉ lưu tại `youtube-session/` trên máy, không gửi CMS, không dùng chung hồ sơ Facebook, không chứa trong gói phát hành. Cookie từ domain khác bị loại khi nhập/xuất phiên. **Bỏ phiên dùng để tải** xóa file cookie của bộ tải; hồ sơ trình duyệt vẫn được giữ.
+
+`download-queue.json` lưu hàng đợi, trạng thái lỗi và tạm dừng. Đóng app giữa chừng thì mục đang tải trở lại Chờ khi mở lại; các mục chờ xác minh vẫn tạm dừng. Giữ file này khi nâng cấp từ v10 trở đi. Chạy lại `setup.bat` để cập nhật yt-dlp và các phụ thuộc trước khi thử lỗi tải.
 
 ## Tự đăng Facebook
 
@@ -44,9 +64,11 @@ Máy phải bật và mở tool thì mới chạy. Tắt máy quá 30 phút sau 
 
 Thao tác Facebook được xếp hàng và chạy lần lượt để tránh hai việc dùng chung một hồ sơ. Khi mở đăng nhập/mở lại trình duyệt, đóng cửa sổ khi xong để tool xử lý việc tiếp theo. Đổi tài khoản trên UI không đổi tài khoản của lệnh đã xếp hàng. Đổi trình duyệt cần tắt tự động và đợi hàng đợi xong, sau đó đăng nhập/kiểm tra lại. Nếu phát hiện hồ sơ đăng nhập nhầm tài khoản, tool dừng trước khi đăng.
 
-### Nâng cấp từ v8
+### Nâng cấp từ v8/v9
 
-Đóng tool và trình duyệt của tool trước, chép các file chương trình v9 vào thư mục cũ rồi chạy `setup.bat`. Giữ nguyên `automation.json`, `settings.json`, `fb-profile`, `logs` và Kho video. Lần mở đầu tool tạo `automation.v8-backup.json`, đưa cấu hình cũ vào **Tài khoản 1** (hoặc tên Facebook đã lưu) và giữ lịch sử bài đăng. Hồ sơ cũ `fb-profile/<browser>` tiếp tục được dùng. Tài khoản mới lưu ở `fb-profile/accounts/<id>/<browser>`.
+Đóng tool và trình duyệt của tool trước, chép các file chương trình v10 vào thư mục cũ rồi chạy `setup.bat`. Giữ nguyên `automation.json`, `settings.json`, `fb-profile`, `logs` và Kho video. Khi nâng cấp từ v8, tool tạo `automation.v8-backup.json`, đưa cấu hình cũ vào **Tài khoản 1** (hoặc tên Facebook đã lưu) và giữ lịch sử bài đăng. Hồ sơ cũ `fb-profile/<browser>` tiếp tục được dùng. Tài khoản mới lưu ở `fb-profile/accounts/<id>/<browser>`.
+
+Dữ liệu đã nâng cấp ở v9 tiếp tục được dùng, không chuyển lại lần nữa. Bản trước v10 chưa lưu hàng đợi ra file: nhập lại link kênh để tải tiếp, các video đã có được bỏ qua theo danh sách đã tải.
 
 Page đã nhập ở v8 được giữ để không mất cấu hình. Khi sửa lịch, quét Page lại rồi chọn từ danh sách quản lý. Gỡ tài khoản chỉ gỡ cấu hình trong app; hồ sơ trên đĩa và lịch sử đăng được giữ.
 

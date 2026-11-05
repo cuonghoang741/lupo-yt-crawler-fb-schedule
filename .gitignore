@@ -2,6 +2,8 @@ __pycache__/
 *.pyc
 .venv/
 fb-profile/
+youtube-session/
+download-queue.json
 logs/
 downloads/
 tools/

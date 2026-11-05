@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import copy
+import hashlib
 import os
 import queue
 import secrets
@@ -27,6 +28,7 @@ import fbpost
 import render as render_mod
 import ytcore
 import accounts
+from youtube_auth import YouTubeAuth
 
 ROOT = ytcore.app_dir()
 # webui.html nằm cạnh file nguồn, hoặc trong gói khi đóng .exe bằng PyInstaller.
@@ -59,13 +61,21 @@ class Api:
         self.engine = automation.Engine(self.store, self._settings, self._emit)
         self.dialog = None  # main() gán hộp thoại chọn file của pywebview
         self.tools = None
-        self.jobs: list[dict] = []  # tải thủ công: {id, title, channel, status, progress, kind, url}
-        self.dl_lock = threading.Lock()
+        self.queue_file = self.store.path.with_name("download-queue.json")
+        self.youtube = YouTubeAuth(self.store.path.parent / "youtube-session")
+        self.jobs: list[dict] = []
+        self.dl_paused, self.dl_error = False, ""
+        self.dl_lock = threading.RLock()
+        self._load_queue()
+        self.thumb_key = secrets.token_hex(24)
+        self.thumbnails = {}
         self.dl_stop = threading.Event()
         self.dl_thread: threading.Thread | None = None
         self.render_job = {"status": "idle", "title": "", "output": "", "error": ""}
         if start_engine:
             self.engine.start()
+            if any(j["status"] == "Chờ" for j in self.jobs) and not self.dl_paused:
+                self._ensure_worker()
 
     # ---------- nền ----------
     def _settings(self):
@@ -94,6 +104,35 @@ class Api:
 
     def _queue(self, name, req):
         self.engine.commands.put((name, self._account(req)["id"]))
+
+    def _load_queue(self):
+        try:
+            data = json.loads(self.queue_file.read_text("utf-8"))
+            for j in data.get("jobs", []):
+                if not isinstance(j, dict) or not j.get("id") or j.get("kind") not in ("video", "channel"):
+                    continue
+                try:
+                    ytcore.youtube_input(j.get("url", ""))
+                except ValueError:
+                    continue
+                self.jobs.append({**j, "status": "Chờ" if j.get("status") == "Đang chạy" else j.get("status", "Chờ")})
+            self.dl_paused, self.dl_error = bool(data.get("paused")), str(data.get("error") or "")
+        except (OSError, ValueError, TypeError):
+            pass
+
+    def _save_queue(self):
+        with self.dl_lock:
+            tmp = self.queue_file.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"jobs": self.jobs, "paused": self.dl_paused, "error": self.dl_error},
+                                      ensure_ascii=False), encoding="utf-8")
+            tmp.replace(self.queue_file)
+
+    def _thumbnail(self, path):
+        if not path:
+            return None
+        token = hashlib.sha256((self.thumb_key + path).encode()).hexdigest()
+        self.thumbnails[token] = path
+        return "/thumbnails/" + token
 
     # ---------- dữ liệu cho giao diện ----------
     def _video_status(self, video, d):
@@ -144,6 +183,7 @@ class Api:
                            "duration": ytcore.human_duration(v["duration"]), "size": ytcore.human_size(v["size"]),
                            "file": v["file"], "url": v.get("url"), "at": (dl_map.get(v["file"], "")).replace("T", " "),
                            "rendered": str(rpath) if rpath.is_file() else "",
+                           "thumbnail": self._thumbnail(v.get("thumbnail")),
                            "post": "Đăng tiếp theo" if is_next else text, "tag": "next" if is_next else tag})
         now = datetime.now()
         at = automation.next_slot(d["slots"], d["fired"], now) if d["enabled"] else None
@@ -176,7 +216,8 @@ class Api:
             "library": videos, "waiting": waiting,
             "failed_downloads": [x for x in d.get("downloads", []) if str(x.get("status", "")).startswith("Lỗi")][:50],
             "render_job": self.render_job,
-            "jobs": self.jobs,
+            "jobs": copy.deepcopy(self.jobs),
+            "youtube": self.youtube.snapshot(), "download_paused": self.dl_paused, "download_error": self.dl_error,
             "posts": [{"key": k, "at": (p.get("at") or "").replace("T", " "), "title": p.get("title", ""),
                        "page": p.get("page", ""), "state": p.get("state", ""), "state_text": STATES.get(p.get("state"), p.get("state", "")),
                        "account_label": p.get("account_label") or next((a["label"] for a in raw["accounts"] if a["id"] == p.get("account_id")), "Tài khoản cũ"),
@@ -470,62 +511,159 @@ class Api:
         return {"ok": True}
 
     # Tải thủ công
+    def do_youtube_login(self, req):
+        self.youtube.login(req.get("browser") or "chrome")
+        self.do_pause_downloads({})
+        return {"ok": True}
+
+    def do_youtube_mode(self, req):
+        self.youtube.set_mode(req.get("mode"))
+        return {"ok": True}
+
+    def do_youtube_import_cookie(self, req):
+        if not self.dialog:
+            raise ValueError("Không mở được hộp thoại chọn file.")
+        picked = self.dialog("cookie")
+        if picked:
+            self.youtube.import_file(picked)
+        return {"ok": True}
+
+    def do_youtube_forget(self, req):
+        self.youtube.forget()
+        return {"ok": True}
+
+    def do_import_links(self, req):
+        if not self.dialog:
+            raise ValueError("Không mở được hộp thoại chọn file.")
+        picked = self.dialog("links")
+        if not picked:
+            return {"ok": True, "added": 0}
+        path = Path(picked)
+        if path.stat().st_size > 1_000_000:
+            raise ValueError("File tối đa 1 MB.")
+        return self.do_start_download({"text": path.read_text("utf-8-sig")})
+
+    def do_download_template(self, req):
+        if not self.dialog:
+            raise ValueError("Không mở được hộp thoại lưu file.")
+        picked = self.dialog("template")
+        if picked:
+            Path(picked).write_text("url\nhttps://www.youtube.com/@ChosenByHeavens\n", encoding="utf-8-sig")
+        return {"ok": True}
+
     def do_start_download(self, req):
         try:
             items = ytcore.parse_import(req.get("text") or "")
         except ValueError as e:
             raise ValueError(str(e))
+        added = 0
         with self.dl_lock:
             for it in items:
+                existing = next((j for j in self.jobs if j["url"] == it.url and j["status"] not in ("Xong", "Đã có")), None)
+                if existing:
+                    if existing["status"] in ("Lỗi", "Chờ xác minh"):
+                        existing.update(status="Chờ", progress="")
+                    continue
                 self.jobs.append({"id": uuid.uuid4().hex, "url": it.url, "kind": it.kind,
                                   "title": it.url if it.kind == "video" else f"Kênh: {it.url}",
                                   "channel": "", "status": "Chờ", "progress": ""})
+                added += 1
+            self._save_queue()
         self._ensure_worker()
+        return {"ok": True, "added": added}
+
+    def do_retry_downloads(self, req):
+        if self.youtube.busy:
+            raise ValueError("Đóng cửa sổ YouTube sau khi đăng nhập rồi bấm Tiếp tục.")
+        with self.dl_lock:
+            for j in self.jobs:
+                if j["status"] in ("Lỗi", "Chờ xác minh") and (not req.get("id") or req["id"] == j["id"]):
+                    j.update(status="Chờ", progress="")
+            self.dl_paused, self.dl_error = False, ""
+            self._save_queue()
+        self._ensure_worker()
+        return {"ok": True}
+
+    def do_pause_downloads(self, req):
+        with self.dl_lock:
+            self.dl_paused, self.dl_error = True, "Đã tạm dừng tải. Bấm Tiếp tục khi sẵn sàng."
+            self.dl_stop.set()
+            self._save_queue()
         return {"ok": True}
 
     def do_clear_done(self, req):
         with self.dl_lock:
             self.jobs = [j for j in self.jobs if j["status"] not in ("Xong", "Đã có")]
+            self._save_queue()
         return {"ok": True}
 
     def _ensure_worker(self):
-        if self.dl_thread and self.dl_thread.is_alive():
-            return
-        self.dl_stop.clear()
-        self.dl_thread = threading.Thread(target=self._download_worker, daemon=True)
-        self.dl_thread.start()
+        with self.dl_lock:
+            if self.dl_paused:
+                return
+            self.dl_stop.clear()
+            if self.dl_thread and self.dl_thread.is_alive():
+                return
+            self.dl_thread = threading.Thread(target=self._download_worker, daemon=True)
+            self.dl_thread.start()
 
     def _download_worker(self):
         try:
             if self.tools is None:
                 self.tools = crawl.ensure_tools(lambda m, f=None: self.logs.append(m))
             output, height = self._settings()
-            while not self.dl_stop.is_set():
+            while not self.dl_stop.is_set() and not self.dl_paused:
                 with self.dl_lock:
                     job = next((j for j in self.jobs if j["status"] == "Chờ" and j["kind"] == "channel"), None) \
                         or next((j for j in self.jobs if j["status"] == "Chờ"), None)
-                if not job:
-                    break
-                job["status"] = "Đang chạy"
+                    if not job:
+                        break
+                    job["status"] = "Đang chạy"
+                    self._save_queue()
                 if job["kind"] == "channel":
                     self._dl_channel(job, output, height)
                 else:
                     self._dl_video(job, output, height)
         except Exception as e:
-            self.logs.append(f"Lỗi tải: {e}")
+            self.dl_paused, self.dl_error = True, "Không chuẩn bị được công cụ tải. Kiểm tra mạng rồi bấm Tiếp tục."
+            self.logs.append(self.dl_error)
+        finally:
+            with self.dl_lock:
+                self._save_queue()
+                self.dl_thread = None
+                if not self.dl_stop.is_set() and not self.dl_paused and any(j["status"] == "Chờ" for j in self.jobs):
+                    self._ensure_worker()
+
+    def _job_error(self, job, error):
+        with self.dl_lock:
+            if isinstance(error, ytcore.Cancelled):
+                job.update(status="Chờ", progress="")
+            elif isinstance(error, (ytcore.YoutubeAuthRequired, ytcore.YoutubeRateLimited)):
+                self.dl_paused, self.dl_error = True, str(error)
+                job.update(status="Chờ xác minh" if isinstance(error, ytcore.YoutubeAuthRequired) else "Lỗi", progress=str(error))
+            else:
+                job.update(status="Lỗi", progress=str(error)[:300])
+            self._save_queue()
 
     def _dl_channel(self, job, output, height):
-        found = []
+        count = 0
+        def on_video(v):
+            nonlocal count
+            count += 1
+            with self.dl_lock:
+                if not any(j["url"] == v["url"] for j in self.jobs):
+                    self.jobs.append({"id": uuid.uuid4().hex, "url": v["url"], "kind": "video",
+                                      "title": v["title"], "channel": v["channel"], "status": "Chờ", "progress": ""})
+                if count % 50 == 0:
+                    self._save_queue()
         try:
-            crawl.list_videos(crawl.resolve(job["url"]), self.tools, found.append, self.dl_stop.is_set)
+            crawl.list_videos(crawl.resolve(job["url"]), self.tools, on_video, self.dl_stop.is_set)
         except Exception as e:
-            job.update(status="Lỗi", progress=str(e)[:120])
+            self._job_error(job, e)
             return
         with self.dl_lock:
-            for v in found:
-                self.jobs.append({"id": uuid.uuid4().hex, "url": v["url"], "kind": "video",
-                                  "title": v["title"], "channel": v["channel"], "status": "Chờ", "progress": ""})
-        job.update(status="Xong", progress=f"{len(found)} video")
+            job.update(status="Xong", progress=f"{count} video")
+            self._save_queue()
 
     def _dl_video(self, job, output, height):
         def progress(fraction, speed):
@@ -533,7 +671,10 @@ class Api:
         try:
             result = crawl.download(job["url"], output, height, self.tools, progress, self.dl_stop.is_set)
         except Exception as e:
-            job.update(status="Lỗi", progress=str(e)[:120])
+            self._job_error(job, e)
+            if not isinstance(e, ytcore.Cancelled):
+                self.store.add_download({"at": datetime.now().isoformat(timespec="minutes"), "title": job["title"],
+                                         "channel": job.get("channel"), "url": job["url"], "status": "Lỗi: " + job["progress"]})
             return
         if result.get("skipped"):
             job.update(status="Đã có", progress="")
@@ -544,10 +685,12 @@ class Api:
                                  "title": result.get("title") or job["title"], "channel": result.get("channel") or "",
                                  "url": job["url"], "file": result.get("file"),
                                  "status": "Đã có" if result.get("skipped") else "Đã tải"})
+        self._save_queue()
 
     def shutdown(self):
         self.dl_stop.set()
         self.engine.stop_event.set()
+        self.youtube.stop.set()
 
 
 # ---------- HTTP loopback có token (theo mẫu Frame Preview) ----------
@@ -571,6 +714,12 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def send(self, status, payload, typ="application/json; charset=utf-8"):
+        try:
+            return self._send(status, payload, typ)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return  # cửa sổ đã đóng hoặc trang vừa tải lại
+
+    def _send(self, status, payload, typ):
         if not isinstance(payload, bytes):
             payload = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
@@ -578,6 +727,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Security-Policy",
                          f"default-src 'none'; script-src 'nonce-{self.server.nonce}'; style-src 'unsafe-inline'; "
                          f"connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
@@ -597,6 +747,14 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/":
             html = HTML_FILE.read_text("utf-8").replace("__NONCE__", self.server.nonce)
             return self.send(200, html.encode("utf-8"), "text/html; charset=utf-8")
+        if self.path.startswith("/thumbnails/"):
+            path = self.server.api.thumbnails.get(self.path.removeprefix("/thumbnails/"))
+            if path:
+                p = Path(path)
+                types = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
+                if p.is_file() and p.suffix.lower() in types and p.stat().st_size <= 5_000_000:
+                    return self.send(200, p.read_bytes(), types[p.suffix.lower()])
+            return self.send(404, {"error": "Không có thumbnail."})
         return self.send(404, {"error": "Không có tài nguyên."})
 
     def do_POST(self):
@@ -627,13 +785,20 @@ def main():
     for key in ("ALLOW_DOWNLOADS", "ALLOW_FILE_URLS", "OPEN_EXTERNAL_LINKS_IN_BROWSER"):
         webview.settings[key] = False
     webview.settings["SHOW_DEFAULT_MENUS"] = False
-    window = webview.create_window("YouTube → Facebook · v9", server.url, width=1180, height=800,
+    window = webview.create_window("YouTube → Facebook · v10", server.url, width=1180, height=800,
                                    min_size=(900, 600), background_color="#0F1115")
 
     def dialog(kind):
         if kind == "files":
             exts = ("Video (*.mp4;*.mkv;*.mov;*.webm;*.avi;*.m4v)",)
             return window.create_file_dialog(webview.FileDialog.OPEN, allow_multiple=True, file_types=exts) or []
+        if kind in ("cookie", "links"):
+            types = ("Cookie Netscape (*.txt)",) if kind == "cookie" else ("Danh sách link (*.csv;*.txt;*.tsv)",)
+            picked = window.create_file_dialog(webview.FileDialog.OPEN, file_types=types)
+            return picked[0] if picked else ""
+        if kind == "template":
+            picked = window.create_file_dialog(webview.FileDialog.SAVE, save_filename="youtube-template.csv", file_types=("CSV (*.csv)",))
+            return (picked[0] if isinstance(picked, (tuple, list)) else picked) or ""
         value = window.create_file_dialog(webview.FileDialog.FOLDER)
         return value[0] if value else ""
 

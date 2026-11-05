@@ -20,6 +20,14 @@ VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be"}
 URL_HEADERS = {"url", "link", "youtube_url"}
 ARCHIVE = ".da-tai.txt"
+EXTS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v"}
+
+
+def safe_stem(value: str) -> str:
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value).strip(" .") or "Video"
+    if re.fullmatch(r"CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9]", name, re.I):
+        name += "_"
+    return name
 
 
 @dataclass(frozen=True)
@@ -185,19 +193,60 @@ class Cancelled(Exception):
     pass
 
 
+class YoutubeAuthRequired(RuntimeError):
+    pass
+
+
+class YoutubeRateLimited(RuntimeError):
+    pass
+
+
+def download_error(error: Exception) -> RuntimeError:
+    message = str(error)
+    low = message.lower()
+    if any(s in low for s in ("sign in to confirm", "sign in to verify", "cookies are no longer valid",
+                              "login required", "cookies have expired", "failed to decrypt", "cookie database", "dpapi")):
+        return YoutubeAuthRequired("YouTube yêu cầu đăng nhập/xác minh hoặc không đọc được cookie. Đăng nhập YouTube hoặc nhập cookies.txt rồi Thử lại mục lỗi.")
+    if "429" in low or "too many requests" in low or "rate limit" in low:
+        return YoutubeRateLimited("YouTube đang giới hạn lượt tải. Đã tạm dừng hàng đợi; đợi một lúc rồi bấm Tiếp tục.")
+    message = re.sub(r"https?://\S+", "[link]", message).replace("ERROR: ", "")
+    return RuntimeError(message[-300:] or "Không tải được video.")
+
+
 def base_options(tools: dict[str, str]) -> dict:
+    from youtube_auth import YouTubeAuth
+    try:
+        auth = YouTubeAuth().options()
+    except ValueError as e:
+        raise YoutubeAuthRequired(str(e)) from None
     return {
+        **auth,
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
         "socket_timeout": 30,
         "retries": 3,
+        "extractor_retries": 2,
+        "fragment_retries": 3,
+        "concurrent_fragment_downloads": 1,
+        "sleep_interval_requests": 1,
+        "sleep_interval": 2,
         "ffmpeg_location": str(Path(tools["ffmpeg"]).parent) if os.name == "nt" else tools["ffmpeg"],
         "js_runtimes": {"deno": {"path": tools["deno"]}},
     }
 
 
 def expand(item: YoutubeInput, tools: dict[str, str], on_video, should_stop) -> int:
+    from yt_dlp.utils import DownloadError
+    try:
+        return _expand(item, tools, on_video, should_stop)
+    except DownloadError as e:
+        if isinstance(e.exc_info[1] if e.exc_info else None, Cancelled):
+            raise Cancelled() from None
+        raise download_error(e) from None
+
+
+def _expand(item: YoutubeInput, tools: dict[str, str], on_video, should_stop) -> int:
     """Liệt kê mọi video công khai của kênh (gồm Shorts), bỏ qua live/sắp phát. Trả về số video."""
     from yt_dlp import YoutubeDL
 
@@ -283,8 +332,7 @@ def download(url: str, output: Path, height: int, tools: dict[str, str], on_prog
     except DownloadError as e:
         if isinstance(e.exc_info[1] if e.exc_info else None, Cancelled):
             raise Cancelled()
-        message = re.sub(r"https?://\S+", "[link]", str(e)).replace("ERROR: ", "")
-        raise RuntimeError(message[-400:] or "Không tải được video.")
+        raise download_error(e) from None
     if info is None:
         return {"skipped": True}
     file = result.get("file") or info.get("filepath") or (info.get("requested_downloads") or [{}])[0].get("filepath")
@@ -310,8 +358,9 @@ def scan_library(output: Path) -> list[dict]:
         except (OSError, ValueError):
             continue
         stem = meta.name[: -len(".info.json")]
-        video = meta.with_name(stem + ".mp4")
-        if not video.exists():
+        video = next((meta.with_name(stem + ext) for ext in [".mp4", *sorted(EXTS - {".mp4"})]
+                      if meta.with_name(stem + ext).is_file()), None)
+        if video is None:
             continue
         thumb = meta.with_name(stem + ".jpg")
         videos.append({
