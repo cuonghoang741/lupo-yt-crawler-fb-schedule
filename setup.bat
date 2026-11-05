@@ -19,7 +19,7 @@ if not exist ".venv\Scripts\python.exe" (
   %PY% -m venv .venv || goto :error
 )
 ".venv\Scripts\python.exe" -m pip install -q --disable-pip-version-check --upgrade -r requirements.txt || goto :error
-start "" ".venv\Scripts\pythonw.exe" app.py
+start "" ".venv\Scripts\pythonw.exe" webapp.py
 exit /b
 
 :error

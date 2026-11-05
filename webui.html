@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YouTube → Facebook</title>
+<style>
+:root{
+  --bg:#F4F5F7; --card:#fff; --bd:#E5E7EB; --text:#1F2328; --muted:#6B7280;
+  --accent:#2563EB; --accent-d:#1D4ED8; --accent-soft:#EFF4FF;
+  --ok:#15803D; --ok-soft:#E8F5EC; --warn:#B45309; --warn-soft:#FEF3E2; --err:#B91C1C;
+  --side:#111827; --side-hover:#1F2937; --side-txt:#D1D5DB; --side-mut:#6B7280;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);font-size:14px;display:flex}
+button{font:inherit;cursor:pointer}
+a{color:var(--accent);text-decoration:none}
+#side{width:236px;flex:none;background:var(--side);color:var(--side-txt);height:100vh;overflow-y:auto;display:flex;flex-direction:column;padding-bottom:14px}
+#side .brand{padding:20px 20px 4px}
+#side .brand b{color:#fff;font-size:17px}
+#side .brand span{color:var(--side-mut);font-size:12px;display:block;margin-top:2px}
+#side .grp{color:var(--side-mut);font-size:11px;font-weight:700;letter-spacing:.04em;padding:16px 20px 4px}
+#side .nav{display:flex;align-items:center;gap:10px;margin:1px 10px;padding:9px 12px;border-radius:9px;color:var(--side-txt);transition:background .12s}
+#side .nav:hover{background:var(--side-hover)}
+#side .nav.on{background:var(--accent);color:#fff}
+#side .nav .ic{width:18px;text-align:center;font-size:15px;opacity:.9}
+#side .nav .lbl{flex:1}
+#side .nav .bdg{font-size:11px;font-weight:700;background:rgba(255,255,255,.15);color:#fff;border-radius:10px;padding:1px 7px;min-width:18px;text-align:center}
+#side .nav.on .bdg{background:rgba(255,255,255,.25)}
+#wrap{flex:1;display:flex;flex-direction:column;height:100vh;overflow:hidden}
+#banner{display:none;margin:16px 28px 0;background:var(--accent-soft);border:1px solid #C7D7FE;border-radius:10px;padding:11px 14px;align-items:center;gap:12px}
+#banner.show{display:flex}
+#banner .t{flex:1;color:var(--accent-d);font-weight:600}
+#main{flex:1;overflow-y:auto;padding:22px 28px 40px}
+#statusbar{flex:none;background:var(--card);border-top:1px solid var(--bd);padding:7px 20px;display:flex;align-items:center;gap:12px;color:var(--muted);font-size:13px}
+#activity{color:var(--accent);font-weight:600;margin-left:auto}
+h1{font-size:23px;margin:0 0 3px}
+.sub{color:var(--muted);margin:0 0 18px;max-width:760px;line-height:1.5}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:18px;margin-bottom:16px;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+.card h2{font-size:15px;margin:0 0 3px}
+.card .desc{color:var(--muted);font-size:13px;margin:0 0 12px;line-height:1.5}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.row.end{justify-content:flex-end}
+label.fld{display:block;font-weight:600;font-size:13px;margin:10px 0 5px}
+input[type=text],textarea,select{width:100%;border:1px solid var(--bd);border-radius:9px;padding:9px 11px;font:inherit;background:#fff;color:var(--text)}
+input[readonly]{background:#F9FAFB;color:var(--muted)}
+input[type=text]:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+textarea{resize:vertical;min-height:70px}
+select.inline,input.inline{width:auto}
+button.btn{background:#F3F4F6;border:1px solid #D1D5DB;border-radius:9px;padding:8px 14px;color:var(--text);font-weight:500;transition:background .12s}
+button.btn:hover{background:#E5E7EB}
+button.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.btn.primary:hover{background:var(--accent-d)}
+button.btn.sm{padding:5px 10px;font-size:12.5px}
+button.btn:disabled{opacity:.5;cursor:default}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;color:var(--muted);font-weight:600;font-size:12px;padding:8px 10px;border-bottom:1px solid var(--bd);position:sticky;top:0;background:var(--card)}
+td{padding:9px 10px;border-bottom:1px solid #F1F2F4;vertical-align:middle}
+td.r,th.r{text-align:right}
+tr:last-child td{border-bottom:none}
+.tbl-wrap{border:1px solid var(--bd);border-radius:12px;overflow:hidden;background:var(--card)}
+.tbl-scroll{max-height:58vh;overflow-y:auto}
+.pill{display:inline-block;font-size:12px;font-weight:600;padding:2px 9px;border-radius:999px}
+.pill.ok{background:var(--ok-soft);color:var(--ok)}
+.pill.warn{background:var(--warn-soft);color:var(--warn)}
+.pill.err{background:#FDE8E8;color:var(--err)}
+.pill.wait{background:#EEF0F2;color:var(--muted)}
+.pill.next{background:var(--accent-soft);color:var(--accent-d)}
+.stats{display:grid;grid-template-columns:1fr 2fr 1fr 1fr;gap:12px}
+.stat{background:#F9FAFB;border:1px solid var(--bd);border-radius:10px;padding:12px 14px}
+.stat .k{color:var(--muted);font-size:12px}
+.stat .v{font-size:17px;font-weight:700;margin-top:3px;line-height:1.3}
+.steps .step{display:flex;gap:12px;align-items:center;padding:8px 0}
+.steps .num{width:26px;height:26px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;background:#F3F4F6;color:var(--muted)}
+.steps .num.done{background:var(--ok-soft);color:var(--ok)}
+.steps .num.now{background:var(--accent);color:#fff}
+.steps .st{flex:1}
+.steps .st b{font-weight:600}
+.steps .st.done b{color:var(--muted);font-weight:500}
+.steps .st small{color:var(--muted);display:block;font-size:12.5px}
+.sw{width:42px;height:24px;border-radius:999px;background:#CBD5E1;position:relative;flex:none}
+.empty{text-align:center;color:var(--muted);padding:40px 10px}
+.empty .big{font-size:30px;opacity:.5;display:block;margin-bottom:6px}
+.muted{color:var(--muted)}
+.chk{display:flex;align-items:center;gap:9px;margin:8px 0}
+.chk input{width:17px;height:17px;flex:none}
+#log{background:#0F1115;color:#C7CBD1;border-radius:10px;padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;height:150px;overflow-y:auto;white-space:pre-wrap;line-height:1.5}
+.note{background:var(--accent-soft);border-radius:9px;padding:9px 12px;font-size:12.5px;color:var(--accent-d);margin-top:8px}
+.note.ok{background:var(--ok-soft);color:var(--ok)}
+.note.warn{background:var(--warn-soft);color:var(--warn)}
+.previewbox{background:#F9FAFB;border:1px solid var(--bd);border-radius:9px;padding:11px;white-space:pre-wrap;min-height:48px;font-size:13px;line-height:1.5}
+.toast{position:fixed;right:20px;bottom:20px;background:#111827;color:#fff;padding:11px 16px;border-radius:9px;box-shadow:0 6px 20px rgba(0,0,0,.25);opacity:0;transform:translateY(8px);transition:.2s;z-index:50;max-width:360px}
+.toast.show{opacity:1;transform:none}
+.toast.err{background:#B91C1C}
+</style>
+</head>
+<body>
+<nav id="side"><div class="brand"><b>YouTube → Facebook</b><span>Tải video và tự đăng Page</span></div><div id="navbox"></div></nav>
+<div id="wrap">
+  <div id="banner"><div class="t" id="banner-t"></div><button class="btn primary" id="banner-b"></button></div>
+  <div id="main"></div>
+  <div id="statusbar"><span id="status">Sẵn sàng.</span><span id="activity"></span></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script nonce="__NONCE__">
+const TOKEN=location.hash.slice(1);
+let S={}, view="overview";
+const $=(id)=>document.getElementById(id);
+const esc=(s)=>(s==null?"":String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function api(path,body){
+  const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(body||{})});
+  const j=await r.json().catch(()=>({error:'Lỗi mạng'}));
+  if(!r.ok) throw new Error(j.error||'Lỗi'); return j;
+}
+async function act(action,extra){ try{const r=await api('/api/action',{action,...(extra||{})}); await refresh(); return r;}catch(e){toast(e.message,true);throw e;} }
+function toast(msg,err){const t=$('toast');t.textContent=msg;t.className='toast show'+(err?' err':'');clearTimeout(t._t);t._t=setTimeout(()=>t.className='toast',2600);}
+
+const NAV=[
+  ["Bắt đầu",[["overview","Tổng quan","◧"]]],
+  ["YouTube",[["download","Tải thủ công","↓"],["library","Kho video","▦"],["render","Render","✦"]]],
+  ["Facebook",[["facebook","Tài khoản & Page","⚑"],["schedule","Lịch đăng & nội dung","◷"],["history","Lịch sử đăng","≡"]]],
+  ["Khác",[["settings","Cài đặt","⚙"]]],
+];
+function buildNav(){
+  let h="";
+  for(const [grp,items] of NAV){ h+=`<div class="grp">${grp}</div>`;
+    for(const [k,lbl,ic] of items) h+=`<div class="nav" data-act="go" data-k="${k}"><span class="ic">${ic}</span><span class="lbl">${lbl}</span><span class="bdg" id="bdg-${k}" style="display:none"></span></div>`;
+  }
+  $('navbox').innerHTML=h;
+}
+function go(k){ view=k; document.querySelectorAll('#side .nav').forEach(n=>n.classList.toggle('on',n.dataset.k===k)); render(); }
+
+function page(title,sub,body){ return `<h1>${title}</h1>${sub?`<p class="sub">${sub}</p>`:''}${body}`; }
+function render(){
+  const m=$('main');
+  const f={overview:renderOverview,download:renderDownload,library:renderLibrary,render:renderRender,
+    facebook:renderFacebook,schedule:renderSchedule,history:renderHistory,settings:renderSettings}[view];
+  m.innerHTML=f(); live();
+}
+function renderOverview(){
+  return page('Tổng quan','Tải video YouTube về máy rồi tự đăng lên Page Facebook theo giờ. Máy phải bật và mở tool thì mới chạy.',`
+   <div class="card">
+     <div class="row" style="justify-content:space-between">
+       <div><div id="ov-state" style="font-size:17px;font-weight:700"></div><div id="ov-hint" class="muted" style="margin-top:3px"></div></div>
+       <div class="row"><button class="btn" data-act="post_now">Đăng thử 1 video</button>
+       <button class="btn primary" id="ov-toggle" data-act="toggle"></button></div>
+     </div>
+     <div class="stats" id="ov-stats" style="margin-top:16px"></div>
+   </div>
+   <div class="card"><h2>Các bước cài đặt</h2><div class="desc">Làm lần lượt từ trên xuống, bước nào xong có dấu ✓.</div>
+     <div class="steps" id="ov-steps"></div></div>`);
+}
+function renderDownload(){
+  return page('Tải video thủ công','Dán link video hoặc link kênh (mỗi dòng một link). Video tải xong vào Kho video, chờ đăng.',`
+   <div class="card"><h2>Link YouTube</h2>
+     <textarea id="dl-text" placeholder="https://www.youtube.com/watch?v=...
+https://www.youtube.com/@tenkenh"></textarea>
+     <div class="row" style="margin-top:10px"><button class="btn primary" data-act="start_download">↓ Tải về Kho video</button></div>
+   </div>
+   <div class="card"><h2>Hàng đợi tải</h2><div class="row end" style="margin-bottom:8px"><button class="btn sm" data-act="clear_done">Dọn mục đã xong</button></div>
+     <div class="tbl-wrap"><div class="tbl-scroll"><table><thead><tr><th>Video</th><th>Kênh</th><th>Trạng thái</th><th class="r">Tiến độ</th></tr></thead><tbody id="dl-rows"></tbody></table></div></div>
+   </div>`);
+}
+function renderLibrary(){
+  return page('Kho video','Video đã tải về máy, chờ đăng. Tới khung giờ tool lấy video cũ nhất chưa đăng. Bên dưới gộp cả lịch sử tải.',`
+   <div class="card">
+     <div class="row" style="justify-content:space-between;margin-bottom:10px">
+       <div><h2 style="margin:0">Video trong Kho</h2><div class="muted" id="lib-sum" style="font-size:12.5px"></div></div>
+       <button class="btn" data-act="import">+ Thêm video từ máy</button>
+     </div>
+     <div class="tbl-wrap"><div class="tbl-scroll"><table>
+       <thead><tr><th>Tải lúc</th><th>Video</th><th>Kênh</th><th class="r">Dài</th><th class="r">Nặng</th><th>Đăng FB</th><th></th></tr></thead>
+       <tbody id="lib-rows"></tbody></table></div></div>
+   </div>
+   <div class="card" id="failed-card" style="display:none"><h2>Lượt tải lỗi</h2>
+     <div class="tbl-wrap"><table><thead><tr><th>Thời gian</th><th>Video</th><th>Lỗi</th></tr></thead><tbody id="failed-rows"></tbody></table></div>
+   </div>`);
+}
+function renderRender(){
+  return page('Render video','Chọn một video trong Kho và render lại sang khung hình khác (vd 9:16 nền mờ) bằng Frame Preview.',`
+   <div class="card"><h2>Chọn video & khung hình</h2>
+     <label class="fld">Video trong Kho</label><select id="rn-file"></select>
+     <div class="row" style="margin-top:12px">
+       <div><label class="fld" style="margin-top:0">Khung hình</label>
+         <select id="rn-ratio" class="inline"><option>9:16</option><option>1:1</option><option>4:5</option><option>16:9</option><option>4:3</option></select></div>
+       <div><label class="fld" style="margin-top:0">Kiểu ghép</label>
+         <select id="rn-fit" class="inline"><option value="blur">Nền mờ</option><option value="crop">Cắt</option><option value="pad">Viền</option></select></div>
+       <div style="align-self:flex-end"><button class="btn primary" id="rn-go" data-act="start_render">✦ Render lại</button></div>
+     </div>
+     <div id="rn-status" style="margin-top:14px"></div>
+   </div>`);
+}
+function renderFacebook(){
+  return page('Tài khoản & Page','',`
+   <div class="card"><h2>1. Tài khoản Facebook</h2><div id="fb-acc"></div>
+     <div class="row" style="margin-top:10px"><button class="btn primary" id="fb-login" data-act="login">Đăng nhập Facebook</button>
+       <button class="btn" data-act="check_account">Kiểm tra lại</button></div></div>
+   <div class="card"><h2>2. Page sẽ đăng</h2><div class="desc">Mỗi video đăng lên tất cả Page dưới đây. Tên Page phải giống tên hiển thị trên Facebook.</div>
+     <div class="row"><input type="text" id="pg-name" placeholder="Tên Page" style="flex:1">
+       <input type="text" id="pg-url" placeholder="https://www.facebook.com/..." style="flex:2">
+       <button class="btn primary" data-act="add_page">+ Thêm</button></div>
+     <div class="tbl-wrap" style="margin-top:12px"><table><thead><tr><th>Tên Page</th><th>Link</th><th></th></tr></thead><tbody id="pg-rows"></tbody></table></div></div>`);
+}
+function renderSchedule(){
+  const s=S;
+  return page('Lịch đăng & nội dung','',`
+   <div class="card"><h2>Giờ đăng mỗi ngày</h2><div class="desc">Mỗi khung giờ đăng 1 video (cũ nhất chưa đăng) lên tất cả Page. Cách nhau bằng dấu phẩy: 08:00, 12:00, 20h</div>
+     <input type="text" id="sc-slots" value="${esc((s.slots||[]).join(', '))}"></div>
+   <div class="card"><h2>Nội dung bài</h2><div class="desc">Chữ trong ngoặc được thay tự động: {title} tiêu đề, {hashtags} hashtag, {sourceUrl} link YouTube.</div>
+     <textarea id="sc-cap">${esc(s.caption||'')}</textarea>
+     <label class="fld">Hashtag</label><input type="text" id="sc-tags" value="${esc(s.hashtags||'')}">
+     <label class="fld">Xem trước</label><div class="previewbox" id="sc-prev"></div>
+     <div class="row" style="margin-top:12px"><button class="btn primary" data-act="save_schedule">Lưu lịch đăng</button><span class="muted" id="sc-state"></span></div></div>`);
+}
+function renderHistory(){
+  return page('Lịch sử đăng','“Cần kiểm tra” là đã bấm Đăng nhưng chưa lấy được link. Tool không tự đăng lại để tránh trùng.',`
+   <div class="card"><div class="tbl-wrap"><div class="tbl-scroll"><table>
+     <thead><tr><th>Thời gian</th><th>Video</th><th>Page</th><th>Trạng thái</th><th>Link / lỗi</th><th></th></tr></thead>
+     <tbody id="hist-rows"></tbody></table></div></div></div>
+   <div class="card"><h2>Nhật ký bot</h2><div class="desc">Lưu ra file theo ngày trong thư mục logs.</div><div id="log"></div></div>`);
+}
+function renderSettings(){
+  const s=S, r=s.render||{};
+  return page('Cài đặt','',`
+   <div class="card"><h2>Thư mục Kho video</h2><div class="desc">Nơi lưu video tải về và render.</div>
+     <div class="row"><input type="text" id="st-out" value="${esc(s.output||'')}" readonly style="flex:1">
+       <button class="btn" data-act="set_output">Chọn…</button>
+       <button class="btn" data-act="open_folder">Mở</button></div>
+     <label class="fld">Chất lượng tải</label>
+     <select id="st-q" class="inline">${['1080p','720p','480p','360p'].map(q=>`<option ${s.quality===q?'selected':''}>${q}</option>`).join('')}</select></div>
+   <div class="card"><h2>Render trước khi đăng (Frame Preview)</h2>
+     <div class="desc">Bật thì tới giờ đăng, video được reframe qua Frame Preview rồi mới đăng. Tắt thì đăng bản gốc. Máy không GPU render chậm.</div>
+     <div class="chk"><input type="checkbox" id="st-ren" ${r.enabled?'checked':''}><label for="st-ren">Bật render tự động trước khi đăng</label></div>
+     <div class="row">
+       <div><label class="fld">Khung hình</label><select id="st-ratio" class="inline">${['9:16','1:1','4:5','16:9','4:3'].map(x=>`<option ${r.ratio===x?'selected':''}>${x}</option>`).join('')}</select></div>
+       <div><label class="fld">Kiểu ghép</label><select id="st-fit" class="inline">${[['blur','Nền mờ'],['crop','Cắt'],['pad','Viền']].map(([v,l])=>`<option value="${v}" ${r.fit===v?'selected':''}>${l}</option>`).join('')}</select></div></div>
+     <label class="fld">Thư mục Frame Preview</label>
+     <div class="row"><input type="text" id="st-frame" value="${esc(r.frame_dir||'')}" placeholder="để trống sẽ tự dò" style="flex:1">
+       <button class="btn" data-act="pick_frame">Chọn…</button></div>
+     <div class="note ${r.found?'ok':'warn'}" style="margin-top:8px">${r.found?('✓ Tìm thấy: '+esc(r.found)):'Chưa tìm thấy Frame Preview (cần file render_cli.py).'}</div>
+     <div class="row" style="margin-top:12px"><button class="btn primary" data-act="save_render">Lưu render</button><span class="muted" id="st-rstate"></span></div></div>
+   <div class="card"><h2>Facebook nâng cao</h2><div class="desc">Không bắt buộc.</div>
+     <div class="chk"><input type="checkbox" id="st-read" ${s.reading?'checked':''}><label for="st-read">Đọc tin mỗi giờ cho giống người thật (tìm từ khóa, cuộn đọc ~1 phút)</label></div>
+     <label class="fld">Từ khóa (cách nhau bằng dấu phẩy)</label><input type="text" id="st-kw" value="${esc((s.keywords||[]).join(', '))}">
+     <div class="chk" style="margin-top:10px"><input type="checkbox" id="st-show" ${s.show_browser?'checked':''}><label for="st-show">Hiện trình duyệt khi bot chạy (chỉ để gỡ lỗi)</label></div>
+     <div class="row" style="margin-top:12px"><button class="btn primary" data-act="save_advanced">Lưu</button>
+       <button class="btn" data-act="read_now">Đọc tin ngay</button><span class="muted" id="st-astate"></span></div></div>`);
+}
+
+function live(){
+  const s=S; if(!s||!s.steps) return;
+  setBdg('library', s.waiting); setBdg('history', s.check_count, '#FBBF24');
+  const ov=$('bdg-overview'); if(ov){ov.style.display=s.enabled?'':'none';ov.textContent='Bật';ov.style.background=s.enabled?'var(--ok)':''}
+  $('activity').textContent=s.activity?('⏳ '+s.activity):'';
+  const todo=s.steps.findIndex(x=>!x.done), acc=s.account;
+  if(acc&&!acc.ok) showBanner('Facebook cần đăng nhập lại. Tool đã dừng đăng.','Đăng nhập','login',{});
+  else if(todo<0) hideBanner();
+  else { const st=s.steps[todo]; showBanner(`Bước tiếp theo (${todo+1}/5): ${st.title}. ${st.desc}`, todo===4?'Bật tự động':'Làm ngay', todo===4?'toggle':'go', {k:st.key}); }
+  ({overview:liveOverview,download:liveDownload,library:liveLibrary,render:liveRender,facebook:liveFacebook,schedule:liveSchedule,history:liveHistory,settings:function(){}}[view]||function(){})();
+}
+function setBdg(k,n,color){const e=$('bdg-'+k);if(!e)return;if(n){e.style.display='';e.textContent=n;if(color)e.style.background=color;}else e.style.display='none';}
+function showBanner(t,b,actName,data){const bn=$('banner');bn.classList.add('show');$('banner-t').textContent=t;const btn=$('banner-b');btn.textContent=b;btn.dataset.act=actName;btn.dataset.k=(data&&data.k)||'';}
+function hideBanner(){$('banner').classList.remove('show');}
+function rows(id,list,cols,empty){const b=$(id);if(!b)return;b.innerHTML=list.length?list.join(''):`<tr><td colspan="${cols}"><div class="empty">${empty}</div></td></tr>`;}
+
+function liveOverview(){
+  const s=S; if(!$('ov-state'))return;
+  $('ov-state').innerHTML=s.enabled?'<span style="color:var(--ok)">● Tự động đang BẬT</span>':'○ Tự động đang TẮT';
+  $('ov-hint').textContent=s.enabled?'Tool đang tự đăng video trong Kho theo giờ.':'Làm xong các bước bên dưới rồi bấm Bật tự động.';
+  const t=$('ov-toggle');t.textContent=s.enabled?'Tắt tự động':'Bật tự động';t.className='btn '+(s.enabled?'':'primary');
+  $('ov-stats').innerHTML=[
+    ['Lượt đăng tiếp theo', s.enabled?(s.next_slot||'Chưa có giờ'):'Đang tắt'],
+    ['Video sẽ đăng', s.pages&&s.pages.length?(s.next_video||'Kho hết video chưa đăng'):'Chưa có Page'],
+    ['Kho video', s.waiting+' chờ / '+s.library.length],
+    ['Đã đăng', s.posted_count+' bài'+(s.check_count?(' · '+s.check_count+' cần KT'):'')],
+  ].map(([k,v])=>`<div class="stat"><div class="k">${k}</div><div class="v">${esc(v)}</div></div>`).join('');
+  const todo=s.steps.findIndex(x=>!x.done);
+  $('ov-steps').innerHTML=s.steps.map((st,i)=>`<div class="step"><div class="num ${st.done?'done':(i===todo?'now':'')}">${st.done?'✓':i+1}</div>
+    <div class="st ${st.done?'done':''}"><b>${esc(st.title)}</b><small>${esc(st.desc)}</small></div>
+    ${i===4?`<button class="btn sm ${st.done?'':'primary'}" data-act="toggle">${st.done?'Tắt':'Bật'}</button>`:`<button class="btn sm ${i===todo?'primary':''}" data-act="go" data-k="${st.key}">${st.done?'Sửa':'Làm'}</button>`}</div>`).join('');
+}
+function liveDownload(){ rows('dl-rows', S.jobs.map(j=>`<tr><td>${esc(j.title)}</td><td>${esc(j.channel)}</td><td>${esc(j.status)}</td><td class="r">${esc(j.progress)}</td></tr>`), 4, 'Chưa có mục nào. Dán link rồi bấm Tải.'); }
+function liveLibrary(){
+  const s=S; if(!$('lib-rows'))return;
+  rows('lib-rows', s.library.map(v=>`<tr>
+     <td class="muted">${esc(v.at||'—')}</td><td>${esc(v.title)}</td><td>${esc(v.channel)}</td>
+     <td class="r">${esc(v.duration)}</td><td class="r">${esc(v.size)}</td>
+     <td><span class="pill ${v.tag}">${esc(v.post)}</span></td>
+     <td class="r" style="white-space:nowrap">
+       <button class="btn sm" data-act="open" data-path="${esc(v.file)}">Xem</button>
+       <button class="btn sm" data-act="render_this" data-file="${esc(v.file)}">Render</button>
+       <button class="btn sm" data-act="delete_video" data-file="${esc(v.file)}">Xóa</button></td></tr>`),
+     7, '<span class="big">▦</span>Kho chưa có video. Sang Tải thủ công để tải về.');
+  $('lib-sum').textContent=s.library.length+' video · '+s.waiting+' chờ đăng';
+  const fc=$('failed-card'); if(fc){const f=s.failed_downloads||[];fc.style.display=f.length?'':'none';
+    if(f.length)$('failed-rows').innerHTML=f.map(x=>`<tr><td class="muted">${esc((x.at||'').replace('T',' '))}</td><td>${esc(x.title)}</td><td class="muted">${esc(x.status)}</td></tr>`).join('');}
+}
+function liveRender(){
+  const s=S; const sel=$('rn-file'); if(!sel)return;
+  const cur=sel.value;
+  sel.innerHTML=s.library.length?s.library.map(v=>`<option value="${esc(v.file)}">${esc(v.title)}${v.rendered?' — đã có bản render':''}</option>`).join(''):'<option value="">(Kho chưa có video)</option>';
+  if(cur&&[...sel.options].some(o=>o.value===cur))sel.value=cur;
+  const rj=s.render_job||{}, box=$('rn-status'); $('rn-go').disabled=rj.status==='running';
+  if(rj.status==='running')box.innerHTML=`<div class="note">⏳ Đang render “${esc(rj.title)}” (${esc(rj.ratio)} · ${esc(rj.fit)})… video dài có thể lâu, cứ để chạy.</div>`;
+  else if(rj.status==='done')box.innerHTML=`<div class="note ok">✓ Render xong: ${esc(rj.output)}</div><div class="row" style="margin-top:8px"><button class="btn sm" data-act="open" data-path="${esc(rj.output)}">Xem bản render</button><button class="btn sm" data-act="open_folder" data-path="${esc(rj.output)}">Mở thư mục</button></div>`;
+  else if(rj.status==='error')box.innerHTML=`<div class="note warn">Render lỗi: ${esc(rj.error)}</div>`;
+  else box.innerHTML='';
+}
+function liveFacebook(){
+  const s=S, a=s.account; if(!$('fb-acc'))return;
+  let col='warn',txt='Chưa đăng nhập',hint='Bấm Đăng nhập Facebook, đăng nhập trong cửa sổ mở ra rồi đóng cửa sổ đó.';
+  if(a&&a.ok){col='ok';txt='✓ Đã đăng nhập: '+esc(a.name||a.id);hint='Kiểm tra lúc '+esc((a.checked_at||'').replace('T',' '))+'. Tiếp theo: thêm Page bên dưới.';}
+  else if(a){col='err';txt='Facebook cần đăng nhập/xác minh lại';hint='Bấm Đăng nhập Facebook.';}
+  $('fb-acc').innerHTML=`<div style="font-weight:600;color:var(--${col})">${txt}</div><div class="muted" style="margin-top:3px">${hint}</div>`;
+  $('fb-login').className='btn '+((a&&a.ok)?'':'primary');
+  $('pg-rows').innerHTML=(s.pages||[]).length?s.pages.map(p=>`<tr><td>${esc(p.name)}</td><td class="muted">${esc(p.url)}</td><td class="r"><button class="btn sm" data-act="remove_page" data-url="${esc(p.url)}">Xóa</button></td></tr>`).join(''):`<tr><td colspan="3"><div class="empty">Chưa có Page nào.</div></td></tr>`;
+}
+function liveSchedule(){ if($('sc-prev')&&!$('sc-prev').textContent) previewCap(); }
+function liveHistory(){
+  const s=S; if(!$('hist-rows'))return;
+  rows('hist-rows',(s.posts||[]).map(p=>{const tag=p.state==='posted'?'ok':p.state==='uncertain'?'warn':p.state==='failed'?'err':'wait';
+    return `<tr><td class="muted">${esc(p.at)}</td><td>${esc(p.title)}</td><td>${esc(p.page)}</td>
+      <td><span class="pill ${tag}">${esc(p.state_text)}</span></td><td class="muted">${esc(p.url||p.error||'')}</td>
+      <td class="r" style="white-space:nowrap">${p.url?`<button class="btn sm" data-act="open_url" data-url="${esc(p.url)}">Mở</button>`:''}
+        ${p.state==='uncertain'?`<button class="btn sm" data-act="lookup" data-key="${esc(p.key)}">Tìm lại</button><button class="btn sm" data-act="mark_posted" data-key="${esc(p.key)}">Đã đăng</button>`:''}
+        ${(p.state==='uncertain'||p.state==='failed')?`<button class="btn sm" data-act="allow_retry" data-key="${esc(p.key)}">Đăng lại</button>`:''}</td></tr>`;}),6,'Chưa có bài đăng nào.');
+  const log=$('log'); if(log){const b=log.scrollHeight-log.scrollTop-log.clientHeight<30;log.textContent=(s.log||[]).join('\n');if(b)log.scrollTop=log.scrollHeight;}
+}
+
+async function previewCap(){try{const r=await api('/api/action',{action:'preview_caption',caption:$('sc-cap').value,hashtags:$('sc-tags').value});if($('sc-prev'))$('sc-prev').textContent=r.preview||'(trống)';}catch(e){}}
+
+const HANDLERS={
+  go:(d)=>go(d.k),
+  post_now:()=>act('post_now'),
+  toggle:()=>act('toggle_enabled'),
+  start_download:()=>{const t=$('dl-text');act('start_download',{text:t.value}).then(()=>t.value='');},
+  clear_done:()=>act('clear_done'),
+  import:()=>act('import_videos').then(r=>toast('Đã thêm '+(r.added||0)+' video từ máy')),
+  open:(d)=>act('open',{path:d.path}),
+  open_folder:(d)=>act('open_folder',{path:d.path||S.output}),
+  render_this:(d)=>{go('render');setTimeout(()=>{const s=$('rn-file');if(s)s.value=d.file;},80);},
+  delete_video:(d)=>{if(confirm('Xóa video này khỏi Kho? Không khôi phục được.'))act('delete_video',{file:d.file});},
+  start_render:()=>act('render_video',{file:$('rn-file').value,ratio:$('rn-ratio').value,fit:$('rn-fit').value}),
+  login:()=>act('login'), check_account:()=>act('check_account'),
+  add_page:()=>act('add_page',{name:$('pg-name').value,url:$('pg-url').value}).then(()=>{$('pg-name').value='';$('pg-url').value='';}),
+  remove_page:(d)=>act('remove_page',{url:d.url}),
+  set_output:()=>act('set_output'),
+  pick_frame:()=>act('pick_frame_dir'),
+  save_render:()=>act('save_render',{enabled:$('st-ren').checked,ratio:$('st-ratio').value,fit:$('st-fit').value,frame_dir:$('st-frame').value}).then(r=>{if($('st-rstate'))$('st-rstate').textContent=r.found?'✓ Đã lưu':'⚠ Đã lưu — chưa thấy Frame Preview';}),
+  save_advanced:()=>act('save_advanced',{reading:$('st-read').checked,show_browser:$('st-show').checked,keywords:$('st-kw').value}).then(()=>{if($('st-astate'))$('st-astate').textContent='✓ Đã lưu';}),
+  read_now:()=>act('read_now'),
+  save_schedule:()=>act('save_schedule',{slots:$('sc-slots').value,caption:$('sc-cap').value,hashtags:$('sc-tags').value}).then(()=>{if($('sc-state'))$('sc-state').textContent='✓ Đã lưu';}),
+  lookup:(d)=>act('lookup',{key:d.key}),
+  mark_posted:(d)=>{const url=prompt('Dán link bài trên Page:');if(url)act('mark_posted',{key:d.key,url});},
+  allow_retry:(d)=>act('allow_retry',{key:d.key}),
+  open_url:(d)=>{act('open',{path:d.url});},
+};
+document.addEventListener('click',(e)=>{const el=e.target.closest('[data-act]');if(!el)return;const h=HANDLERS[el.dataset.act];if(h){e.preventDefault();h(el.dataset);}});
+document.addEventListener('change',(e)=>{if(e.target.id==='st-q')act('set_quality',{quality:e.target.value});});
+document.addEventListener('input',(e)=>{if(e.target.id==='sc-cap'||e.target.id==='sc-tags')previewCap();});
+
+async function refresh(){try{S=await api('/api/state');if(!$('main').innerHTML)render();else live();}catch(e){}}
+buildNav(); go('overview'); refresh(); setInterval(refresh,1600);
+</script>
+</body>
+</html>
