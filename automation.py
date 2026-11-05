@@ -1,4 +1,5 @@
-"""Tự cào kênh và tự đăng theo khung giờ. Mọi thao tác Facebook chạy trên một luồng riêng (Playwright sync)."""
+"""Bộ điều phối: nối ba module — cào+tải (crawl), render (render), đăng Facebook (upload) —
+theo khung giờ và lưu lịch sử. Mọi thao tác Facebook chạy trên một luồng riêng (Playwright sync)."""
 from __future__ import annotations
 
 import json
@@ -10,9 +11,13 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import crawl  # Module 1 — tự cào + tải
+import render  # Module 2 — render (gọi Frame Preview)
+import upload  # Module 3 — đăng Facebook
 import ytcore
 
 STATE = ytcore.app_dir() / "automation.json"
+LOG_DIR = ytcore.app_dir() / "logs"
 DEFAULTS = {
     "channels": [],
     "pages": [],  # [{"name", "url"}]
@@ -23,14 +28,20 @@ DEFAULTS = {
     "scan_minutes": 15,
     "seen": {},  # kênh -> [video id]; lần quét đầu chỉ lấy mốc, không tải lịch sử kênh
     "fired": {},  # khung giờ -> ngày đã chạy
-    "posts": {},  # "videoId|pageUrl" -> {state, url, at, error, title, page, fails}
+    "posts": {},  # "videoId|pageUrl" -> {state, url, at, error, title, page, fails, file, rendered}
     "account": None,
     "keywords": [],
     "reading": False,  # đọc tin theo từ khóa mỗi giờ, như bot bản web
     "last_read": 0,
     "show_browser": False,  # hiện cửa sổ trình duyệt khi bot chạy, để dễ gỡ lỗi
+    "render_enabled": False,  # Module 2: reframe bằng Frame Preview trước khi đăng
+    "render_ratio": "9:16",
+    "render_fit": "blur",  # blur = nền mờ, crop = cắt, pad = viền
+    "frame_dir": "",  # thư mục Frame Preview; để trống thì tự dò
+    "downloads": [],  # lịch sử tải: [{at, title, channel, url, file, status}]
 }
 MAX_FAILS = 2
+MAX_DOWNLOAD_HISTORY = 500
 SLOT_GRACE = timedelta(minutes=30)
 READ_EVERY = 3600
 
@@ -131,6 +142,12 @@ class Store:
             self.data["posts"][key] = {**self.data["posts"].get(key, {}), **values}
             self.save()
 
+    def add_download(self, record: dict):
+        """Ghi một dòng lịch sử tải (giữ tối đa MAX_DOWNLOAD_HISTORY dòng gần nhất)."""
+        with self.lock:
+            self.data["downloads"] = ([record] + self.data.get("downloads", []))[:MAX_DOWNLOAD_HISTORY]
+            self.save()
+
 
 class Engine(threading.Thread):
     """Vòng lặp: quét kênh theo chu kỳ, tải video mới, tới khung giờ thì đăng một video lên mọi Page."""
@@ -155,7 +172,15 @@ class Engine(threading.Thread):
         store.save()
 
     def log(self, text: str):
-        self.emit("log", f"{datetime.now():%H:%M} {text}")
+        now = datetime.now()
+        line = f"{now:%H:%M} {text}"
+        self.emit("log", line)
+        try:  # lưu nhật ký ra file theo ngày để mở lại app vẫn còn
+            LOG_DIR.mkdir(exist_ok=True)
+            with open(LOG_DIR / f"bot-{now:%Y-%m-%d}.txt", "a", encoding="utf-8") as f:
+                f.write(f"{now:%H:%M:%S} {text}\n")
+        except OSError:
+            pass
 
     def run(self):
         while not self.stop_event.is_set():
@@ -176,11 +201,9 @@ class Engine(threading.Thread):
     def handle(self, kind, *args):
         data = self.store.data
         if kind == "login":
-            import fbpost
-
             self.current = "login"
             self.log("Đã mở cửa sổ Facebook: đăng nhập, xác minh nếu được hỏi, xong thì đóng cửa sổ.")
-            fbpost.login_until_closed()
+            upload.login_until_closed()
             return self.check_account()
         if kind == "check_account":
             return self.check_account()
@@ -211,28 +234,24 @@ class Engine(threading.Thread):
 
     def ensure_tools(self):
         if self.tools is None:
-            self.tools = ytcore.ensure_tools(lambda m, f=None: self.emit("status", m + (f" {f:.0%}" if f else "")))
+            self.tools = crawl.ensure_tools(lambda m, f=None: self.emit("status", m + (f" {f:.0%}" if f else "")))
         return self.tools
 
     # ---------- tài khoản ----------
     def check_account(self):
-        import fbpost
-
         self.current = "check"
         try:
-            with fbpost.Session(self.store.data["show_browser"]) as s:
+            with upload.Session(self.store.data["show_browser"]) as s:
                 account = s.account()
             self.store.data["account"] = {**account, "ok": True, "checked_at": datetime.now().isoformat(timespec="minutes")}
             self.log(f"Đã đăng nhập Facebook: {account['name'] or account['id']}.")
-        except fbpost.AuthRequired:
+        except upload.AuthRequired:
             self.store.data["account"] = {"ok": False, "checked_at": datetime.now().isoformat(timespec="minutes")}
             self.log("Facebook chưa đăng nhập hoặc đang yêu cầu xác minh. Bấm Đăng nhập Facebook.")
         self.store.save()
 
     # ---------- đọc tin ----------
     def read(self):
-        import fbpost
-
         data = self.store.data
         if not data["keywords"]:
             return self.log("Chưa có từ khóa để đọc tin.")
@@ -243,16 +262,16 @@ class Engine(threading.Thread):
         self.current = "read"
         self.log(f"Đọc tin theo từ khóa “{keyword}” (khoảng 1 phút)…")
         try:
-            with fbpost.Session(self.store.data["show_browser"]) as s:
+            with upload.Session(self.store.data["show_browser"]) as s:
                 s.read_feed(keyword, self.stop_event.wait)
             self.log("Đã tìm và cuộn đọc một lượt.")
-        except fbpost.AuthRequired:
+        except upload.AuthRequired:
             with self.store.lock:
                 data["account"] = {"ok": False, "checked_at": datetime.now().isoformat(timespec="minutes")}
                 self.store.save()
             self.log("Facebook yêu cầu đăng nhập/xác minh. Dừng đọc tin; bấm Đăng nhập Facebook.")
 
-    # ---------- cào ----------
+    # ---------- Module 1: cào + tải ----------
     def scan(self):
         self.last_scan = time.time()
         data = self.store.data
@@ -263,9 +282,9 @@ class Engine(threading.Thread):
         output, height = self.settings()
         for channel in data["channels"]:
             try:
-                item = ytcore.youtube_input(channel)
+                item = crawl.resolve(channel)
                 videos = []
-                ytcore.expand(item, tools, videos.append, self.stop_event.is_set)
+                crawl.list_videos(item, tools, videos.append, self.stop_event.is_set)
             except Exception as e:
                 self.log(f"Không quét được {channel}: {str(e)[:150]}")
                 continue
@@ -282,30 +301,46 @@ class Engine(threading.Thread):
                 if self.stop_event.is_set():
                     return
                 self.log(f"Video mới: {video['title'][:60]} — đang tải…")
+                at = datetime.now().isoformat(timespec="minutes")
                 try:
-                    result = ytcore.download(video["url"], output, height, tools, lambda f, s: None, self.stop_event.is_set)
-                    self.log("Tải xong." if not result.get("skipped") else "Đã có trong thư mục.")
+                    result = crawl.download(video["url"], output, height, tools, lambda f, s: None, self.stop_event.is_set)
+                    skipped = result.get("skipped")
+                    self.log("Tải xong." if not skipped else "Đã có trong thư mục.")
+                    self.store.add_download({"at": at, "title": result.get("title") or video["title"],
+                                             "channel": result.get("channel") or "", "url": video["url"],
+                                             "file": result.get("file"), "status": "Đã có" if skipped else "Đã tải"})
                 except Exception as e:
                     self.log(f"Tải lỗi: {str(e)[:150]}")
+                    self.store.add_download({"at": at, "title": video["title"], "channel": "", "url": video["url"],
+                                             "file": None, "status": f"Lỗi: {str(e)[:120]}"})
         self.emit("library", None)
 
-    # ---------- đăng ----------
+    # ---------- Module 2 + 3: render rồi đăng ----------
     def post_slot(self, manual=False):
-        import fbpost
-
         data = self.store.data
         pages = data["pages"]
         if not pages:
             return self.log("Chưa có Page để đăng.")
         output, _ = self.settings()
-        video = pick_video(ytcore.scan_library(output), pages, data["posts"])
+        video = pick_video(crawl.library(output), pages, data["posts"])
         if not video:
             return self.log("Không còn video nào chưa đăng trong Thư viện.")
         caption = caption_for(data["caption"], video["title"], data["hashtags"], video.get("url") or "")
         self.current = "post"
         self.log(f"Đăng “{video['title'][:60]}” lên {len(pages)} Page{' (thử ngay)' if manual else ''}.")
+
+        # Module 2 — render (nếu bật): reframe một lần, dùng cho mọi Page.
+        upload_file = video["file"]
+        rendered = None
+        if render.available(data):
+            try:
+                upload_file = render.render(video["file"], data, self.stop_event.is_set, self.log)
+                rendered = upload_file if upload_file != video["file"] else None
+            except Exception as e:
+                self.log(f"Render lỗi: {str(e)[:150]}. Đăng bản gốc.")
+
         try:
-            session = fbpost.Session(self.store.data["show_browser"])
+            session = upload.Session(self.store.data["show_browser"])
         except Exception as e:
             return self.log(f"Không mở được trình duyệt: {e}")
         try:
@@ -314,16 +349,18 @@ class Engine(threading.Thread):
                 post = data["posts"].get(key)
                 if post and (post["state"] in ("posted", "uncertain", "posting") or post.get("fails", 0) >= MAX_FAILS):
                     continue
-                self.store.set_post(key, state="preparing", title=video["title"], page=page["name"], at=datetime.now().isoformat(timespec="minutes"), error=None)
+                self.store.set_post(key, state="preparing", title=video["title"], page=page["name"],
+                                    at=datetime.now().isoformat(timespec="minutes"), error=None,
+                                    file=video["file"], rendered=rendered)
                 self.emit("changed", None)
                 try:
                     page_id = session.switch_page(page)
                     # Ghi "đang gửi" bền vững trước khi bấm: mất điện/treo sau đó sẽ thành Cần kiểm tra, không đăng lại.
-                    url = session.publish(video["file"], caption, page, page_id,
+                    url = session.publish(upload_file, caption, page, page_id,
                                           lambda: self.store.set_post(key, state="posting", page_id=page_id), self.log)
                     self.store.set_post(key, state="posted", url=url, error=None)
                     self.log(f"Đã đăng lên {page['name']}: {url}")
-                except fbpost.AuthRequired:
+                except upload.AuthRequired:
                     state = "uncertain" if data["posts"][key]["state"] == "posting" else "failed"
                     self.store.set_post(key, state=state, error="Facebook yêu cầu đăng nhập/xác minh lại.")
                     with self.store.lock:
@@ -331,7 +368,7 @@ class Engine(threading.Thread):
                         self.store.save()
                     self.log("Facebook yêu cầu đăng nhập lại. Dừng đăng.")
                     return
-                except fbpost.Uncertain as e:
+                except upload.Uncertain as e:
                     self.store.set_post(key, state="uncertain", error=str(e))
                     self.log(f"{page['name']}: {e}")
                 except Exception as e:
@@ -347,16 +384,14 @@ class Engine(threading.Thread):
 
     def lookup(self, key: str):
         """Kiểm tra lại bài Cần kiểm tra trên Page (chỉ đọc)."""
-        import fbpost
-
         post = self.store.data["posts"].get(key)
         page = next((p for p in self.store.data["pages"] if p["url"] == key.split("|", 1)[1]), None)
         if not post or not page:
             return
         self.current = "lookup"
-        video = next((v for v in ytcore.scan_library(self.settings()[0]) if v["id"] == key.split("|")[0]), None)
+        video = next((v for v in crawl.library(self.settings()[0]) if v["id"] == key.split("|")[0]), None)
         caption = caption_for(self.store.data["caption"], post.get("title") or "", self.store.data["hashtags"], (video or {}).get("url") or "")
-        with fbpost.Session(self.store.data["show_browser"]) as s:
+        with upload.Session(self.store.data["show_browser"]) as s:
             page_id = s.switch_page(page)
             url = s.lookup(page, page_id, caption)
         if url:

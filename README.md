@@ -7,6 +7,22 @@ Tool chạy trên máy: tải video YouTube về **Kho video** rồi tự đăng
 - **Facebook → Tài khoản & Page**, **Lịch đăng & nội dung** (có xem trước bài), **Lịch sử đăng** (bài đã đăng, bài cần kiểm tra, nhật ký bot).
 - **Cài đặt**: thư mục Kho video, chất lượng, đọc tin, hiện trình duyệt khi gỡ lỗi.
 
+## Ba module chính
+
+Code chia theo đúng pipeline, mỗi bước một module:
+
+1. **`crawl.py`** — tự cào kênh + tải video về máy (dùng `ytcore`).
+2. **`render.py`** — render/reframe video đã tải bằng tool **Frame Preview** (vd 9:16 nền mờ). Mặc định tắt; bật trong **Cài đặt → Render trước khi đăng**. Khi tắt thì đăng nguyên bản.
+3. **`upload.py`** — đăng lên Page Facebook (dùng `fbpost`).
+
+`automation.py` là bộ điều phối nối ba module theo khung giờ. Khi bật render, pipeline chạy: cào+tải → render → đăng.
+
+### Lịch sử (lưu ra file, mở lại app vẫn còn)
+
+- **Lịch sử tải** (menu YouTube): thời gian, kênh, đường dẫn file trên máy, kết quả.
+- **Nhật ký bot**: lưu `logs/bot-YYYY-MM-DD.txt`; nút **Mở nhật ký hôm nay** ở Lịch sử đăng.
+- **Lịch sử đăng**: mỗi bài ghi kèm đường dẫn file gốc và file đã render; nút **Mở file đã đăng**.
+
 ## Chạy
 
 1. Giải nén zip (chuột phải → Extract All), đừng chạy trong file zip.

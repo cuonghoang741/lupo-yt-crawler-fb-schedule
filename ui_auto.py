@@ -122,6 +122,7 @@ class Automation:
         self.render_facebook()
         self.render_channels()
         self.render_history()
+        self.render_downloads()
         self.render_schedule_state()
 
         logged_in = steps[0][3]
@@ -325,6 +326,51 @@ class Automation:
             return messagebox.showinfo("Bỏ theo dõi", "Chọn kênh trong danh sách trước.")
         self.update(channels=[c for c in self.store.data["channels"] if c not in keys])
 
+    # ---------- Lịch sử tải ----------
+    def build_downloads(self, parent):
+        page = T.Page(parent, "Lịch sử tải",
+                      "Mọi video tool đã tải về (tự cào hoặc tải thủ công), kèm đường dẫn file trên máy. "
+                      "Lưu lại nên mở lại app vẫn còn.")
+        box = T.card(page, expand=True)
+        self.downloads_view = T.table(box, [("at", "Thời gian", 125, "w", False), ("title", "Video", 300, "w", True),
+                                            ("channel", "Kênh", 150, "w", False), ("status", "Trạng thái", 110, "w", False),
+                                            ("file", "File trên máy", 240, "w", True)])
+        self.downloads_view.bind("<Double-1>", lambda e: self.open_download_folder())
+        bar = T.row(box)
+        ttk.Button(bar, text="Mở thư mục chứa file", command=self.open_download_folder).pack(side="left")
+        ttk.Button(bar, text="Xóa lịch sử tải", command=self.clear_downloads).pack(side="left", padx=8)
+        self.downloads_summary = T.label(bar, kind="muted")
+        self.downloads_summary.pack(side="right")
+        return page
+
+    def render_downloads(self):
+        if not hasattr(self, "downloads_view"):
+            return
+        rows = self.store.data.get("downloads", [])
+        self.downloads_view.delete(*self.downloads_view.get_children())
+        for i, r in enumerate(rows):
+            tag = "ok" if r.get("status") == "Đã tải" else "muted" if r.get("status") == "Đã có" else "err"
+            self.downloads_view.insert("", "end", iid=str(i), tags=(tag,), values=(
+                (r.get("at") or "").replace("T", " "), r.get("title", ""), r.get("channel", ""),
+                r.get("status", ""), r.get("file") or ""))
+        self.downloads_summary.configure(text=f"{len(rows)} lượt tải")
+
+    def open_download_folder(self):
+        import app as app_mod
+        keys = self.downloads_view.selection()
+        rows = self.store.data.get("downloads", [])
+        if not keys:
+            return messagebox.showinfo("Lịch sử tải", "Chọn một dòng trước.")
+        file = rows[int(keys[0])].get("file")
+        if file and Path(file).exists():
+            app_mod.open_path(str(Path(file).parent))
+        else:
+            messagebox.showinfo("Mở thư mục", "File không còn trên máy.")
+
+    def clear_downloads(self):
+        if messagebox.askyesno("Xóa lịch sử tải", "Xóa toàn bộ lịch sử tải? Không xóa video, chỉ xóa danh sách ghi lại."):
+            self.update(downloads=[])
+
     # ---------- Tài khoản & Page ----------
     def build_facebook(self, parent):
         page = T.Page(parent, "Tài khoản & Page")
@@ -485,11 +531,13 @@ class Automation:
         ttk.Button(bar, text="Tìm lại bài trên Page", command=self.lookup).pack(side="left", padx=8)
         ttk.Button(bar, text="Đánh dấu đã đăng…", command=self.mark_posted).pack(side="left")
         ttk.Button(bar, text="Cho phép đăng lại", command=self.allow_retry).pack(side="left", padx=8)
+        ttk.Button(bar, text="Mở file đã đăng", command=self.open_post_file).pack(side="left")
 
-        box = T.card(page, "Nhật ký bot", pady=(0, 0))
+        box = T.card(page, "Nhật ký bot", "Nhật ký lưu ra file theo ngày trong thư mục logs, mở lại app vẫn còn.", pady=(0, 0))
         self.log = T.text_box(box, 5)
         self.log.configure(state="disabled", fg="#374151", font=T.font(-1))
         self.log.pack(fill="both", expand=True)
+        ttk.Button(box, text="Mở nhật ký hôm nay", command=self.open_log).pack(anchor="w", pady=(8, 0))
         return page
 
     def render_history(self):
@@ -518,6 +566,25 @@ class Automation:
             webbrowser.open(post["url"])
         elif post:
             messagebox.showinfo("Mở link bài", "Bài này chưa có link.")
+
+    def open_post_file(self):
+        import app as app_mod
+        key, post = self.selected()
+        if not post:
+            return
+        path = post.get("rendered") or post.get("file")
+        if path and Path(path).exists():
+            app_mod.open_path(str(Path(path).parent))
+        else:
+            messagebox.showinfo("Mở file đã đăng", "Không còn file trên máy (có thể đã xóa hoặc chưa lưu đường dẫn).")
+
+    def open_log(self):
+        import app as app_mod
+        path = automation.LOG_DIR / f"bot-{datetime.now():%Y-%m-%d}.txt"
+        if path.exists():
+            app_mod.open_path(str(path))
+        else:
+            messagebox.showinfo("Nhật ký", "Hôm nay chưa có nhật ký.")
 
     def lookup(self):
         key, post = self.selected()
@@ -550,6 +617,32 @@ class Automation:
     # ---------- Cài đặt Facebook nâng cao ----------
     def build_settings(self, page):
         d = self.store.data
+        import render as render_mod
+        box = T.card(page, "Render trước khi đăng (Frame Preview)",
+                     "Bước 2 của pipeline: reframe video đã tải sang khung hình khác (vd 9:16 nền mờ) bằng tool Frame Preview "
+                     "rồi mới đăng. Tắt thì đăng nguyên bản. Máy không có GPU sẽ render chậm.")
+        self.render_enabled = tk.BooleanVar(value=d["render_enabled"])
+        ttk.Checkbutton(box, text="Bật render bằng Frame Preview trước khi đăng", variable=self.render_enabled).pack(anchor="w")
+        bar = T.row(box, pady=(8, 0))
+        T.label(bar, "Khung hình").pack(side="left")
+        self.render_ratio = tk.StringVar(value=d["render_ratio"])
+        ttk.Combobox(bar, textvariable=self.render_ratio, values=["9:16", "1:1", "4:5", "16:9", "4:3"],
+                     width=8, state="readonly").pack(side="left", padx=(6, 16))
+        T.label(bar, "Kiểu ghép").pack(side="left")
+        self.render_fit = tk.StringVar(value={"blur": "Nền mờ", "crop": "Cắt", "pad": "Viền"}.get(d["render_fit"], "Nền mờ"))
+        ttk.Combobox(bar, textvariable=self.render_fit, values=["Nền mờ", "Cắt", "Viền"], width=8, state="readonly").pack(side="left", padx=6)
+        bar = T.row(box, pady=(8, 0))
+        T.label(bar, "Thư mục Frame Preview").pack(side="left")
+        self.frame_dir = tk.StringVar(value=d["frame_dir"])
+        ttk.Entry(bar, textvariable=self.frame_dir).pack(side="left", fill="x", expand=True, padx=8)
+        ttk.Button(bar, text="Chọn…", command=self.choose_frame_dir).pack(side="left")
+        found = render_mod.frame_dir(d["frame_dir"])
+        self.frame_state = T.label(box, kind="muted")
+        self.frame_state.configure(text=(f"✓ Tìm thấy Frame Preview: {found}" if found else
+                                   "Chưa tìm thấy Frame Preview. Để trống sẽ tự dò cạnh tool, hoặc chọn thư mục chứa render_cli.py."))
+        self.frame_state.pack(anchor="w", pady=(6, 0))
+        ttk.Button(box, text="Lưu render", style="Accent.TButton", command=self.save_render).pack(anchor="w", pady=(10, 0))
+
         box = T.card(page, "Facebook nâng cao", "Không bắt buộc.")
         self.reading = tk.BooleanVar(value=d["reading"])
         ttk.Checkbutton(box, text="Đọc tin mỗi giờ cho giống người dùng thật: tìm 1 từ khóa, cuộn đọc khoảng 1 phút",
@@ -566,6 +659,23 @@ class Automation:
         ttk.Button(bar, text="Lưu", style="Accent.TButton", command=self.save_advanced).pack(side="left")
         self.advanced_state = T.label(bar, kind="muted")
         self.advanced_state.pack(side="left", padx=12)
+
+    def choose_frame_dir(self):
+        from tkinter import filedialog
+        path = filedialog.askdirectory(title="Chọn thư mục Frame Preview (chứa render_cli.py)")
+        if path:
+            self.frame_dir.set(path)
+
+    def save_render(self):
+        fit = {"Nền mờ": "blur", "Cắt": "crop", "Viền": "pad"}[self.render_fit.get()]
+        self.update(render_enabled=self.render_enabled.get(), render_ratio=self.render_ratio.get(),
+                    render_fit=fit, frame_dir=self.frame_dir.get().strip())
+        import render as render_mod
+        found = render_mod.frame_dir(self.frame_dir.get().strip())
+        if self.render_enabled.get() and not found:
+            self.frame_state.configure(text="⚠ Đã bật render nhưng chưa tìm thấy Frame Preview — sẽ đăng bản gốc đến khi chọn đúng thư mục.", foreground=T.AMBER)
+        else:
+            self.frame_state.configure(text=f"✓ Đã lưu lúc {datetime.now():%H:%M}." + (f" Frame: {found}" if found else ""), foreground=T.GREEN)
 
     def save_advanced(self) -> bool:
         try:
