@@ -783,7 +783,7 @@ def main():
     for key in ("ALLOW_DOWNLOADS", "ALLOW_FILE_URLS", "OPEN_EXTERNAL_LINKS_IN_BROWSER"):
         webview.settings[key] = False
     webview.settings["SHOW_DEFAULT_MENUS"] = False
-    window = webview.create_window("YouTube → Facebook · v12", server.url, width=1180, height=800,
+    window = webview.create_window("YouTube → Facebook · v13", server.url, width=1180, height=800,
                                    min_size=(900, 600), background_color="#0F1115")
 
     def dialog(kind):

@@ -251,18 +251,25 @@ def _expand(item: YoutubeInput, tools: dict[str, str], on_video, should_stop, li
     if item.kind == "video":
         on_video({"id": item.youtube_id, "title": item.url, "channel": None, "url": item.url})
         return 1
+    from yt_dlp.utils import DownloadError
+
     seen: set[str] = set()
+    last_error = None
+    # Liệt kê thẳng từng tab của kênh (video thường, Shorts, phát lại) thay vì dò trang chủ —
+    # trang chủ không phải lúc nào cũng dẫn tới danh sách video.
     with YoutubeDL({**base_options(tools), "extract_flat": "in_playlist", "lazy_playlist": True}) as ydl:
-        def walk(url: str, depth: int = 0) -> None:
-            info = ydl.extract_info(url, download=False)
+        for tab in ("videos", "shorts", "streams"):
+            try:
+                info = ydl.extract_info(item.url + "/" + tab, download=False)
+            except DownloadError as e:
+                if isinstance(e.exc_info[1] if e.exc_info else None, Cancelled):
+                    raise Cancelled()
+                last_error = e  # tab có thể không tồn tại; bỏ qua, chỉ báo lỗi nếu không ra video nào
+                continue
             for entry in info.get("entries") or []:
                 if should_stop():
                     raise Cancelled()
                 if not entry:
-                    continue
-                if entry.get("ie_key") == "YoutubeTab" or entry.get("_type") == "playlist":
-                    if depth < 2 and entry.get("url"):
-                        walk(entry["url"], depth + 1)
                     continue
                 vid = entry.get("id")
                 if not vid or not VIDEO_ID.match(vid) or vid in seen:
@@ -279,12 +286,9 @@ def _expand(item: YoutubeInput, tools: dict[str, str], on_video, should_stop, li
                     "url": f"https://www.youtube.com/watch?v={vid}",
                 })
                 if limit and len(seen) >= limit:
-                    raise _Enough()
-
-        try:
-            walk(item.url)
-        except _Enough:
-            pass
+                    return len(seen)
+    if not seen and last_error is not None:
+        raise last_error
     return len(seen)
 
 

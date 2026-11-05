@@ -168,7 +168,12 @@ class Session:
         url = urlparse(self.page.url)
         if not facebook_url(self.page.url) or BLOCKED.match(url.path):
             raise AuthRequired()
-        if self.page.query_selector('input[name="email"],input[name="pass"],form[action*="checkpoint"]'):
+        try:
+            found = self.page.query_selector('input[name="email"],input[name="pass"],form[action*="checkpoint"]')
+        except Exception:
+            # Trang đang điều hướng (execution context destroyed) → bỏ qua lần này; vòng gọi sau sẽ kiểm tra lại.
+            return
+        if found:
             raise AuthRequired()
 
     def goto(self, url: str):
