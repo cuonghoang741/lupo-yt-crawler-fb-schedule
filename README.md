@@ -1,10 +1,11 @@
 # YouTube Downloader cho Windows
 
-Tool chạy trên máy, có ba tab:
+Tool chạy trên máy: tải video YouTube về **Kho video** rồi tự đăng lên Page Facebook theo giờ. Menu bên trái chia theo từng bước; dải xanh trên cùng luôn ghi **Bước tiếp theo** cho tới khi cài đặt xong.
 
-1. **Tải video**: dán link video hoặc kênh YouTube (mỗi dòng một link), hoặc import CSV/TXT. Link kênh tải tất cả video công khai, cả Shorts.
-2. **Thư viện**: xem video đã tải theo kênh, tìm, mở, lưu thumbnail, xóa.
-3. **Facebook & Tự động**: đăng nhập Facebook một lần, tự cào kênh mới và tự đăng lên Page theo khung giờ.
+- **Tổng quan**: bật/tắt tự động, lượt đăng tiếp theo, video sẽ đăng, 5 bước cài đặt.
+- **YouTube → Kênh theo dõi**: kênh để tool tự tải video mới. **Tải thủ công**: dán link video/kênh hoặc nhập CSV/TXT. **Kho video**: video đã tải, cột **Đăng Facebook** cho biết video nào đã đăng, chờ đăng, hay đăng tiếp theo.
+- **Facebook → Tài khoản & Page**, **Lịch đăng & nội dung** (có xem trước bài), **Lịch sử đăng** (bài đã đăng, bài cần kiểm tra, nhật ký bot).
+- **Cài đặt**: thư mục Kho video, chất lượng, đọc tin, hiện trình duyệt khi gỡ lỗi.
 
 ## Chạy
 
@@ -14,19 +15,21 @@ Tool chạy trên máy, có ba tab:
 
 ## Tự đăng Facebook
 
-1. Tab **Facebook & Tự động** → **Đăng nhập Facebook**. Cửa sổ trình duyệt mở ra: đăng nhập bằng tài khoản quản lý Page, xác minh nếu Facebook hỏi, rồi **đóng cửa sổ đó**. Tool lưu phiên trong thư mục `fb-profile`; không cần cookie.
-2. **Page đăng**: mỗi dòng `Tên Page | link Page`, ví dụ `Hà Huệ | https://www.facebook.com/profile.php?id=100091470829341`. Tên phải đúng như trong bộ chọn Page của Facebook. Dòng bắt đầu bằng `#` bị bỏ qua.
-3. **Kênh tự cào**: mỗi dòng một link kênh. Lần quét đầu chỉ ghi mốc, không tải lại lịch sử kênh; từ đó cứ 15 phút tool tải video mới về Thư viện.
-4. **Khung giờ**: ví dụ `08:00, 12:00, 20h`. Mỗi khung giờ tool lấy **video tải về sớm nhất chưa đăng** trong Thư viện và đăng lên mọi Page đã liệt kê. Muốn bỏ một video khỏi hàng đợi thì xóa nó trong Thư viện.
-5. Viết **Nội dung bài** với `{title}`, `{hashtags}`, `{sourceUrl}`, tick **Bật tự cào và tự đăng**, bấm **Lưu cài đặt**. Nên bấm **Đăng 1 video ngay** một lần để thử.
+Làm theo 5 bước ở **Tổng quan** (bấm **Làm ngay →** ở từng bước):
 
-Máy phải bật và mở tool thì mới chạy. Tắt máy quá 30 phút sau một khung giờ thì khung đó bị bỏ qua, không đăng bù. Bot chạy trình duyệt ẩn. Muốn xem bot làm gì (gỡ lỗi), tick **Hiện trình duyệt khi bot chạy** rồi **Lưu cài đặt**; khi đó đừng thao tác trên cửa sổ trình duyệt. Cửa sổ **Đăng nhập Facebook** luôn hiện.
+1. **Đăng nhập Facebook** (mục Tài khoản & Page). Cửa sổ trình duyệt mở ra: đăng nhập bằng tài khoản quản lý Page, xác minh nếu Facebook hỏi, rồi **đóng cửa sổ đó**. Tool lưu phiên trong thư mục `fb-profile`; không cần cookie. Đăng nhập xong tool tự chuyển tới phần thêm Page.
+2. **Thêm Page**: nhập Tên Page (đúng như tên hiển thị trên Facebook) và link Page, ví dụ `https://www.facebook.com/profile.php?id=100091470829341`, bấm **+ Thêm Page**.
+3. **Nguồn video**: ở **Kênh theo dõi**, dán link kênh rồi **+ Thêm kênh**. Lần quét đầu chỉ ghi mốc, không tải lại lịch sử kênh; từ đó cứ 15 phút tool tải video mới về Kho video. Muốn lấy video cũ thì dùng **Tải thủ công**.
+4. **Lịch đăng & nội dung**: giờ đăng (ví dụ `08:00, 12:00, 20h`), nội dung với `{title}`, `{hashtags}`, `{sourceUrl}`, hashtag, rồi **Lưu lịch đăng**. Mỗi khung giờ tool lấy **video tải về sớm nhất chưa đăng** trong Kho và đăng lên mọi Page. Muốn bỏ một video khỏi hàng đợi thì xóa nó trong Kho video.
+5. **Bật tự động** ở Tổng quan. Nên bấm **Đăng thử 1 video ngay** một lần để thử.
+
+Máy phải bật và mở tool thì mới chạy. Tắt máy quá 30 phút sau một khung giờ thì khung đó bị bỏ qua, không đăng bù. Bot chạy trình duyệt ẩn. Muốn xem bot làm gì (gỡ lỗi), vào **Cài đặt**, tick **Hiện trình duyệt khi bot chạy** rồi **Lưu**; khi đó đừng thao tác trên cửa sổ trình duyệt. Cửa sổ **Đăng nhập Facebook** luôn hiện.
 
 ### Đọc tin (giống bot bản web)
 
-Điền **Từ khóa đọc tin** (cách nhau bằng dấu phẩy), tick **Đọc tin mỗi giờ**, bấm **Lưu cài đặt**. Mỗi giờ tool chọn ngẫu nhiên một từ khóa, mở trang tìm bài viết trên Facebook và cuộn đọc 6 lần, mỗi lần cách 10 giây. Tool chỉ đọc: không thích, không bình luận, không kết bạn, không đổi dấu vân tay trình duyệt. Gặp đăng nhập/xác minh thì dừng đọc tin cho tới khi bạn đăng nhập lại. Bấm **Đọc tin ngay** để thử một lượt.
+Trong **Cài đặt → Facebook nâng cao**: điền từ khóa (cách nhau bằng dấu phẩy), tick **Đọc tin mỗi giờ**, bấm **Lưu**. Mỗi giờ tool chọn ngẫu nhiên một từ khóa, mở trang tìm bài viết trên Facebook và cuộn đọc 6 lần, mỗi lần cách 10 giây. Tool chỉ đọc: không thích, không bình luận, không kết bạn, không đổi dấu vân tay trình duyệt. Gặp đăng nhập/xác minh thì dừng đọc tin cho tới khi bạn đăng nhập lại. Bấm **Đọc tin ngay** để thử một lượt.
 
-### Trạng thái bài
+### Trạng thái bài (mục Lịch sử đăng)
 
 - **Đã đăng**: có link bài.
 - **Cần kiểm tra**: đã bấm Đăng nhưng chưa lấy được link. Tool **không tự đăng lại** để tránh trùng. Bấm **Tìm lại bài trên Page**, hoặc mở Page xem: có bài thì **Đánh dấu đã đăng** và dán link; chắc chắn chưa có thì **Cho phép đăng lại**.

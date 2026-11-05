@@ -145,6 +145,7 @@ class Engine(threading.Thread):
         self.tools = None
         self.last_scan = 0.0
         self.busy = False
+        self.current: str | None = None  # việc đang làm, để giao diện hiển thị
         # Lần trước tắt app giữa chừng: đã bấm Đăng thì phải kiểm tra tay, chưa bấm thì cho thử lại.
         for post in store.data["posts"].values():
             if post.get("state") == "posting":
@@ -169,6 +170,7 @@ class Engine(threading.Thread):
                 self.log(f"Lỗi: {e}")
             finally:
                 self.busy = False
+                self.current = None
                 self.emit("changed", None)
 
     def handle(self, kind, *args):
@@ -176,6 +178,7 @@ class Engine(threading.Thread):
         if kind == "login":
             import fbpost
 
+            self.current = "login"
             self.log("Đã mở cửa sổ Facebook: đăng nhập, xác minh nếu được hỏi, xong thì đóng cửa sổ.")
             fbpost.login_until_closed()
             return self.check_account()
@@ -215,6 +218,7 @@ class Engine(threading.Thread):
     def check_account(self):
         import fbpost
 
+        self.current = "check"
         try:
             with fbpost.Session(self.store.data["show_browser"]) as s:
                 account = s.account()
@@ -236,6 +240,7 @@ class Engine(threading.Thread):
             data["last_read"] = time.time()
             self.store.save()
         keyword = random.choice(data["keywords"])
+        self.current = "read"
         self.log(f"Đọc tin theo từ khóa “{keyword}” (khoảng 1 phút)…")
         try:
             with fbpost.Session(self.store.data["show_browser"]) as s:
@@ -253,6 +258,7 @@ class Engine(threading.Thread):
         data = self.store.data
         if not data["channels"]:
             return
+        self.current = "scan"
         tools = self.ensure_tools()
         output, height = self.settings()
         for channel in data["channels"]:
@@ -296,6 +302,7 @@ class Engine(threading.Thread):
         if not video:
             return self.log("Không còn video nào chưa đăng trong Thư viện.")
         caption = caption_for(data["caption"], video["title"], data["hashtags"], video.get("url") or "")
+        self.current = "post"
         self.log(f"Đăng “{video['title'][:60]}” lên {len(pages)} Page{' (thử ngay)' if manual else ''}.")
         try:
             session = fbpost.Session(self.store.data["show_browser"])
@@ -346,6 +353,7 @@ class Engine(threading.Thread):
         page = next((p for p in self.store.data["pages"] if p["url"] == key.split("|", 1)[1]), None)
         if not post or not page:
             return
+        self.current = "lookup"
         video = next((v for v in ytcore.scan_library(self.settings()[0]) if v["id"] == key.split("|")[0]), None)
         caption = caption_for(self.store.data["caption"], post.get("title") or "", self.store.data["hashtags"], (video or {}).get("url") or "")
         with fbpost.Session(self.store.data["show_browser"]) as s:
