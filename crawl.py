@@ -21,9 +21,9 @@ def resolve(channel: str) -> ytcore.YoutubeInput:
     return ytcore.youtube_input(channel)
 
 
-def list_videos(item: ytcore.YoutubeInput, tools: dict, on_video, should_stop) -> int:
-    """Liệt kê mọi video của một kênh (gọi on_video cho từng video)."""
-    return ytcore.expand(item, tools, on_video, should_stop)
+def list_videos(item: ytcore.YoutubeInput, tools: dict, on_video, should_stop, limit=None) -> int:
+    """Liệt kê video của một kênh (gọi on_video cho từng video). limit = số video tối đa."""
+    return ytcore.expand(item, tools, on_video, should_stop, limit)
 
 
 def download(url: str, output: Path, height: int, tools: dict, on_progress, should_stop) -> dict:

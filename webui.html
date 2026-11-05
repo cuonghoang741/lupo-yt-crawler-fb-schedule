@@ -102,7 +102,7 @@ tr:last-child td{border-bottom:none}
 </style>
 </head>
 <body>
-<nav id="side"><div class="brand"><b>YouTube → Facebook</b><span>Tải video và tự đăng Page · v11</span></div><div id="navbox"></div></nav>
+<nav id="side"><div class="brand"><b>YouTube → Facebook</b><span>Tải video và tự đăng Page · v12</span></div><div id="navbox"></div></nav>
 <div id="wrap">
   <div id="accountbar"><label for="account-select">Tài khoản Facebook</label><select id="account-select" class="inline"></select><span class="muted" id="account-summary"></span></div>
   <div id="banner"><div class="t" id="banner-t"></div><button class="btn primary" id="banner-b"></button></div>
@@ -166,6 +166,7 @@ function renderDownload(){
      <textarea id="dl-text" placeholder="https://www.youtube.com/watch?v=...
 https://www.youtube.com/@tenkenh"></textarea>
      <div class="row" style="margin-top:10px"><button class="btn primary" data-act="start_download">↓ Tải về Kho video</button>
+       <span class="muted" style="font-size:12.5px">Giới hạn mỗi kênh:</span><input type="text" id="dl-limit" class="inline" style="width:84px" placeholder="tất cả">
        <button class="btn" data-act="import_links">Import CSV / TXT</button><button class="btn" data-act="download_template">File mẫu</button></div>
    </div>
    <div class="card"><h2>Hàng đợi tải</h2><div id="dl-notice"></div><div class="row end" style="margin-bottom:8px"><button class="btn sm" data-act="pause_downloads">Tạm dừng</button><button class="btn sm" data-act="retry_downloads" id="dl-retry">Thử lại mục lỗi</button><button class="btn sm" data-act="clear_done">Dọn mục đã xong</button></div>
@@ -219,6 +220,10 @@ function renderFacebook(){
    <div class="card"><h2>Page quản lý</h2><div class="desc">Quét từ tài khoản đang chọn, sau đó chọn Page tại Lịch đăng. Quét không tự bật đăng bài.</div>
      <div class="row"><button class="btn primary" data-act="scan_pages">Quét Page ngay</button>
        <button class="btn" data-act="go" data-k="schedule">Chọn Page & đặt lịch →</button></div>
+     <div class="row" style="margin-top:10px"><input type="text" id="pg-name" placeholder="Tên Page" style="flex:1">
+       <input type="text" id="pg-url" placeholder="https://www.facebook.com/..." style="flex:2">
+       <button class="btn" data-act="add_page_manual">+ Nhập tay</button></div>
+     <div class="muted" style="font-size:12px;margin-top:4px">Quét tự động và nhập tay dùng song song — nhập tay khi quét chưa ra Page.</div>
      <div id="pg-status"></div>
      <div class="tbl-wrap" style="margin-top:12px"><table><thead><tr><th>Tên Page</th><th>Link</th><th>Lịch đăng</th></tr></thead><tbody id="pg-rows"></tbody></table></div></div>`);
 }
@@ -390,7 +395,8 @@ const HANDLERS={
   go:(d)=>go(d.k),
   post_now:()=>act('post_now'),
   toggle:()=>act('toggle_enabled'),
-  start_download:()=>{const t=$('dl-text');act('start_download',{text:t.value}).then(()=>t.value='');},
+  start_download:()=>{const t=$('dl-text');act('start_download',{text:t.value,limit:($('dl-limit')||{}).value}).then(()=>t.value='');},
+  add_page_manual:()=>act('add_page',{name:$('pg-name').value,url:$('pg-url').value}).then(()=>{$('pg-name').value='';$('pg-url').value='';toast('Đã thêm Page');}),
   clear_done:()=>act('clear_done'),
   retry_downloads:(d)=>act('retry_downloads',{id:d.id}),
   pause_downloads:()=>act('pause_downloads'),

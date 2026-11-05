@@ -323,6 +323,23 @@ class Api:
         self._queue("check_account", req)
         return {"ok": True}
 
+    def do_add_page(self, req):
+        account = self._account(req)
+        name = (req.get("name") or "").strip()
+        url = (req.get("url") or "").strip().split("#")[0]
+        if not name:
+            raise ValueError("Nhập tên Page.")
+        if not accounts.facebook_url(url):
+            raise ValueError("Link Page phải là https://www.facebook.com/...")
+        page = {"name": name, "url": url}
+        with self.store.lock:
+            avail = account.get("available_pages", [])
+            if any(accounts.page_key(p) == accounts.page_key(page) for p in avail):
+                raise ValueError("Page này đã có trong danh sách.")
+            account["available_pages"] = avail + [page]
+            self.store.save()
+        return {"ok": True}
+
     def do_scan_pages(self, req):
         self._queue("scan_pages", req)
         return {"ok": True}
@@ -533,6 +550,12 @@ class Api:
             items = ytcore.parse_import(req.get("text") or "")
         except ValueError as e:
             raise ValueError(str(e))
+        limit = None
+        raw = str(req.get("limit") or "").strip()
+        if raw:
+            if not raw.isdigit() or int(raw) < 1:
+                raise ValueError("Giới hạn phải là số nguyên dương (để trống = tải tất cả).")
+            limit = int(raw)
         added = 0
         with self.dl_lock:
             for it in items:
@@ -543,7 +566,8 @@ class Api:
                     continue
                 self.jobs.append({"id": uuid.uuid4().hex, "url": it.url, "kind": it.kind,
                                   "title": it.url if it.kind == "video" else f"Kênh: {it.url}",
-                                  "channel": "", "status": "Chờ", "progress": ""})
+                                  "channel": "", "status": "Chờ", "progress": "",
+                                  **({"limit": limit} if it.kind == "channel" and limit else {})})
                 added += 1
             self._save_queue()
         self._ensure_worker()
@@ -632,7 +656,7 @@ class Api:
                 if count % 50 == 0:
                     self._save_queue()
         try:
-            crawl.list_videos(crawl.resolve(job["url"]), self.tools, on_video, self.dl_stop.is_set)
+            crawl.list_videos(crawl.resolve(job["url"]), self.tools, on_video, self.dl_stop.is_set, job.get("limit"))
         except Exception as e:
             self._job_error(job, e)
             return
@@ -759,7 +783,7 @@ def main():
     for key in ("ALLOW_DOWNLOADS", "ALLOW_FILE_URLS", "OPEN_EXTERNAL_LINKS_IN_BROWSER"):
         webview.settings[key] = False
     webview.settings["SHOW_DEFAULT_MENUS"] = False
-    window = webview.create_window("YouTube → Facebook · v11", server.url, width=1180, height=800,
+    window = webview.create_window("YouTube → Facebook · v12", server.url, width=1180, height=800,
                                    min_size=(900, 600), background_color="#0F1115")
 
     def dialog(kind):

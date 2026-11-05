@@ -244,49 +244,45 @@ class Session:
         self.assert_identity(None)
         self.goto("https://www.facebook.com/pages/?category=your_pages")
         self.page.wait_for_selector('[role="main"]', timeout=20_000)
+        self.page.wait_for_timeout(2500)
+        self_id = self.cookie("c_user") or ""
         result = {}
         for _ in range(8):
             self.check()
-            found = self.page.evaluate(r"""() => {
-                const main = document.querySelector('[role="main"]');
-                const manage = /^(manage|manage page|switch now|switch into page|quản lý|quản lý trang|chuyển ngay|chuyển sang trang)$/i;
-                const owned = /^(pages you manage|your pages|trang bạn quản lý|các trang bạn quản lý|trang của bạn)$/i;
-                const reserved = /^(pages|profile|me|watch|reel|reels|groups|gaming|marketplace|help|settings|login|friends|notifications|messages|search|ads|business|bookmarks|home|photo|photos|videos|events|share|sharer\.php|l\.php)$/i;
+            # Trang /pages/?category=your_pages chỉ liệt kê Page của tài khoản. Lấy mọi link Page
+            # (profile.php?id=<số> hoặc tên-vanity), bỏ chính tài khoản và các link tiện ích.
+            found = self.page.evaluate(r"""(selfId) => {
+                const main = document.querySelector('[role="main"]') || document.body;
+                const reserved = /^(pages|profile|me|watch|reel|reels|groups|gaming|marketplace|help|settings|login|friends|notifications|messages|search|ads|business|bookmarks|home|photo|photos|videos|events|share|latest|ad_center|ads|adsmanager|commerce|events)$/i;
                 const visible = e => !!(e.getBoundingClientRect().width && e.getBoundingClientRect().height);
-                const nameOf = a => (a.innerText || a.getAttribute('aria-label') || a.querySelector('img')?.alt || '').trim().replace(/\s+/g,' ');
-                const output = [];
+                const clean = s => (s || '').trim().replace(/\s+/g,' ')
+                    .replace(/^Profile picture for\s*/i,'').replace(/^Ảnh đại diện của\s*/i,'').replace(/^Ảnh đại diện của trang\s*/i,'');
+                const out = {};
                 for (const a of main.querySelectorAll('a[href]')) {
                     if (!visible(a)) continue;
                     let u; try { u = new URL(a.href); } catch { continue; }
                     if (!(u.hostname === 'facebook.com' || u.hostname.endsWith('.facebook.com'))) continue;
                     const path = u.pathname.replace(/^\/|\/$/g,'');
-                    const id = path === 'profile.php' ? u.searchParams.get('id') : /^\d+$/.test(path) ? path : null;
-                    if (!(id && /^\d+$/.test(id)) && (!/^[\w.]+$/.test(path) || reserved.test(path) || path.includes('.php'))) continue;
-                    const name = nameOf(a);
-                    if (!name || name.length > 160 || manage.test(name)) continue;
-                    const card = a.closest('article,[role="article"],li,[role="listitem"]');
-                    let verified = false, el = a;
-                    for (let depth=0; el && el !== main && depth < 5; depth++, el=el.parentElement) {
-                        const links = [...el.querySelectorAll('a[href]')];
-                        const controls = [...el.querySelectorAll('button,[role="button"],a')];
-                        // Không coi cả vùng có Trang gợi ý là một thẻ Page quản lý.
-                        const destinations = new Set(links.filter(l => nameOf(l) && !manage.test(nameOf(l))).map(l => {try {const v=new URL(l.href);return v.pathname+'?id='+(v.searchParams.get('id')||'');}catch{return l.href;}}));
-                        if (destinations.size === 1 && controls.some(b => visible(b) && manage.test((b.innerText || b.getAttribute('aria-label') || '').trim()))) verified = true;
-                        const h = el.querySelector('h1,h2,h3,[role="heading"]');
-                        if (h && owned.test(h.innerText.trim()) && ![...el.querySelectorAll('h2,h3,[role="heading"]')].some(x => /suggest|gợi ý|discover|khám phá/i.test(x.innerText))) verified = true;
-                        if (el === card) break;
-                    }
-                    if (verified) output.push({name, url: id ? 'https://www.facebook.com/profile.php?id='+id : 'https://www.facebook.com/'+path});
+                    let url = null;
+                    if (path === 'profile.php' && /^\d+$/.test(u.searchParams.get('id') || '')) {
+                        if (u.searchParams.get('id') === selfId) continue;
+                        url = 'https://www.facebook.com/profile.php?id=' + u.searchParams.get('id');
+                    } else if (/^[\w.]+$/.test(path) && !reserved.test(path) && !path.includes('.php')) {
+                        url = 'https://www.facebook.com/' + path;
+                    } else continue;
+                    const name = clean(a.innerText || a.getAttribute('aria-label') || a.querySelector('img')?.alt);
+                    if (!name || name.length > 160) continue;
+                    // Giữ tên "thật" (link chữ) thay vì tên từ ảnh đại diện nếu trùng Page.
+                    if (!out[url] || (a.innerText || '').trim()) out[url] = name;
                 }
-                return output;
-            }""")
+                return Object.entries(out).map(([url, name]) => ({url, name}));
+            }""", self_id)
             for page in found:
-                if page["url"] != "https://www.facebook.com/profile.php?id=" + (self.cookie("c_user") or ""):
-                    result[page["url"]] = page
+                result[page["url"]] = page
             self.page.evaluate("window.scrollBy(0, window.innerHeight)")
-            self.page.wait_for_timeout(400)
+            self.page.wait_for_timeout(500)
         if not result:
-            raise RuntimeError("Chưa đọc được Page quản lý. Mở trình duyệt tài khoản, chuyển về trang cá nhân và kiểm tra mục Trang, rồi Quét Page lại.")
+            raise RuntimeError("Chưa đọc được Page quản lý. Mở trình duyệt tài khoản, vào mục Trang, rồi Quét Page lại.")
         return list(result.values())
 
     # ---------- đọc tin ----------

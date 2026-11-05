@@ -230,18 +230,22 @@ def base_options(tools: dict[str, str]) -> dict:
     }
 
 
-def expand(item: YoutubeInput, tools: dict[str, str], on_video, should_stop) -> int:
+def expand(item: YoutubeInput, tools: dict[str, str], on_video, should_stop, limit=None) -> int:
     from yt_dlp.utils import DownloadError
     try:
-        return _expand(item, tools, on_video, should_stop)
+        return _expand(item, tools, on_video, should_stop, limit)
     except DownloadError as e:
         if isinstance(e.exc_info[1] if e.exc_info else None, Cancelled):
             raise Cancelled() from None
         raise download_error(e) from None
 
 
-def _expand(item: YoutubeInput, tools: dict[str, str], on_video, should_stop) -> int:
-    """Liệt kê mọi video công khai của kênh (gồm Shorts), bỏ qua live/sắp phát. Trả về số video."""
+class _Enough(Exception):
+    """Đã đủ số video theo giới hạn người dùng đặt; dừng liệt kê sớm."""
+
+
+def _expand(item: YoutubeInput, tools: dict[str, str], on_video, should_stop, limit=None) -> int:
+    """Liệt kê video công khai của kênh (gồm Shorts), bỏ qua live/sắp phát. limit = số video tối đa. Trả về số video."""
     from yt_dlp import YoutubeDL
 
     if item.kind == "video":
@@ -274,8 +278,13 @@ def _expand(item: YoutubeInput, tools: dict[str, str], on_video, should_stop) ->
                     "channel": entry.get("channel") or info.get("channel") or info.get("uploader"),
                     "url": f"https://www.youtube.com/watch?v={vid}",
                 })
+                if limit and len(seen) >= limit:
+                    raise _Enough()
 
-        walk(item.url)
+        try:
+            walk(item.url)
+        except _Enough:
+            pass
     return len(seen)
 
 
