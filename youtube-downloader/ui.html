@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YouTube Downloader</title>
+<style>
+:root{--bg:#F4F5F7;--card:#fff;--bd:#E5E7EB;--text:#1F2328;--muted:#6B7280;--accent:#2563EB;--accent-d:#1D4ED8;--accent-soft:#EFF4FF;--ok:#15803D;--ok-soft:#E8F5EC;--warn:#B45309;--warn-soft:#FEF3E2;--err:#B91C1C;--side:#7C1D1D;--side2:#991B1B;--side-hover:#B91C1C;--side-txt:#FBD5D5;--side-mut:#E8A0A0}
+*{box-sizing:border-box}html,body{margin:0;height:100%}
+body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--text);font-size:14px;display:flex}
+button{font:inherit;cursor:pointer}a{color:var(--accent);text-decoration:none}
+#side{width:218px;flex:none;background:var(--side);color:var(--side-txt);height:100vh;overflow-y:auto;display:flex;flex-direction:column;padding-bottom:14px}
+#side .brand{padding:20px 20px 10px}#side .brand b{color:#fff;font-size:16px}#side .brand span{color:var(--side-mut);font-size:12px;display:block;margin-top:2px}
+#side .nav{display:flex;align-items:center;gap:10px;margin:2px 10px;padding:10px 12px;border-radius:9px;color:var(--side-txt);transition:background .12s}
+#side .nav:hover{background:var(--side-hover)}#side .nav.on{background:#fff;color:var(--side)}#side .nav .ic{width:18px;text-align:center}#side .nav .lbl{flex:1}
+#side .nav .bdg{font-size:11px;font-weight:700;background:rgba(255,255,255,.2);border-radius:10px;padding:1px 7px}
+#wrap{flex:1;display:flex;flex-direction:column;height:100vh;overflow:hidden}
+#main{flex:1;overflow-y:auto;padding:22px 28px 40px}
+#statusbar{flex:none;background:var(--card);border-top:1px solid var(--bd);padding:7px 20px;color:var(--muted);font-size:13px}
+h1{font-size:22px;margin:0 0 3px}.sub{color:var(--muted);margin:0 0 18px;max-width:760px;line-height:1.5}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:18px;margin-bottom:16px;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+.card h2{font-size:15px;margin:0 0 3px}.card .desc{color:var(--muted);font-size:13px;margin:0 0 12px;line-height:1.5}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.row.end{justify-content:flex-end}
+label.fld{display:block;font-weight:600;font-size:13px;margin:10px 0 5px}
+input[type=text],textarea,select{width:100%;border:1px solid var(--bd);border-radius:9px;padding:9px 11px;font:inherit;background:#fff;color:var(--text)}
+input[readonly]{background:#F9FAFB;color:var(--muted)}
+input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+textarea{resize:vertical;min-height:70px}select.inline,input.inline{width:auto}
+button.btn{background:#F3F4F6;border:1px solid #D1D5DB;border-radius:9px;padding:8px 14px;color:var(--text);font-weight:500}
+button.btn:hover{background:#E5E7EB}button.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}button.btn.primary:hover{background:var(--accent-d)}
+button.btn.sm{padding:5px 10px;font-size:12.5px}button.btn:disabled{opacity:.5;cursor:default}
+table{width:100%;border-collapse:collapse;font-size:13px}th{text-align:left;color:var(--muted);font-weight:600;font-size:12px;padding:8px 10px;border-bottom:1px solid var(--bd);position:sticky;top:0;background:var(--card)}
+td{padding:9px 10px;border-bottom:1px solid #F1F2F4;vertical-align:middle}td.r,th.r{text-align:right}tr:last-child td{border-bottom:none}
+.tbl-wrap{border:1px solid var(--bd);border-radius:12px;overflow:hidden;background:var(--card)}.tbl-scroll{max-height:58vh;overflow-y:auto}
+.pill{display:inline-block;font-size:12px;font-weight:600;padding:2px 9px;border-radius:999px}.pill.ok{background:var(--ok-soft);color:var(--ok)}.pill.err{background:#FDE8E8;color:var(--err)}.pill.wait{background:#EEF0F2;color:var(--muted)}
+.empty{text-align:center;color:var(--muted);padding:40px 10px}.empty .big{font-size:30px;opacity:.5;display:block;margin-bottom:6px}.muted{color:var(--muted)}
+#log{background:#0F1115;color:#C7CBD1;border-radius:10px;padding:12px;font-family:ui-monospace,Menlo,monospace;font-size:12px;height:130px;overflow-y:auto;white-space:pre-wrap;line-height:1.5}
+.note{background:var(--accent-soft);border-radius:9px;padding:9px 12px;font-size:12.5px;color:var(--accent-d);margin-top:8px}.note.ok{background:var(--ok-soft);color:var(--ok)}.note.warn{background:var(--warn-soft);color:var(--warn)}
+.toast{position:fixed;right:20px;bottom:20px;background:#111827;color:#fff;padding:11px 16px;border-radius:9px;box-shadow:0 6px 20px rgba(0,0,0,.25);opacity:0;transform:translateY(8px);transition:.2s;z-index:50;max-width:360px}.toast.show{opacity:1;transform:none}.toast.err{background:#B91C1C}
+</style></head>
+<body>
+<nav id="side"><div class="brand"><b>▶ YouTube Downloader</b><span>Tải video & render</span></div><div id="navbox"></div></nav>
+<div id="wrap"><div id="main"></div><div id="statusbar"><span id="status">Sẵn sàng.</span></div></div>
+<div class="toast" id="toast"></div>
+<script nonce="__NONCE__">
+const TOKEN=location.hash.slice(1);let S={},view="download";
+const $=(id)=>document.getElementById(id);const esc=(s)=>(s==null?"":String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function api(p,b){const r=await fetch(p,{method:'POST',headers:{'Content-Type':'application/json','X-Token':TOKEN},body:JSON.stringify(b||{})});const j=await r.json().catch(()=>({error:'Lỗi'}));if(!r.ok)throw new Error(j.error||'Lỗi');return j;}
+async function act(a,e){try{const r=await api('/api/action',{action:a,...(e||{})});await refresh();return r;}catch(x){toast(x.message,true);throw x;}}
+function toast(m,e){const t=$('toast');t.textContent=m;t.className='toast show'+(e?' err':'');clearTimeout(t._t);t._t=setTimeout(()=>t.className='toast',2600);}
+const NAV=[["download","Tải thủ công","↓"],["library","Kho video","▦"],["render","Render","✦"],["settings","Cài đặt","⚙"]];
+function buildNav(){$('navbox').innerHTML=NAV.map(([k,l,i])=>`<div class="nav" data-k="${k}"><span class="ic">${i}</span><span class="lbl">${l}</span><span class="bdg" id="bdg-${k}" style="display:none"></span></div>`).join('');document.querySelectorAll('#side .nav').forEach(n=>n.onclick=()=>go(n.dataset.k));}
+function go(k){view=k;document.querySelectorAll('#side .nav').forEach(n=>n.classList.toggle('on',n.dataset.k===k));render();}
+function page(t,s,b){return `<h1>${t}</h1>${s?`<p class="sub">${s}</p>`:''}${b}`;}
+function render(){const f={download:rDownload,library:rLibrary,render:rRender,settings:rSettings}[view];$('main').innerHTML=f();live();}
+function rDownload(){return page('Tải video thủ công','Dán link video hoặc link kênh (mỗi dòng một link). Video tải xong nằm trong Kho video.',`
+ <div class="card"><h2>Link YouTube</h2><textarea id="dl-text" placeholder="https://www.youtube.com/watch?v=...
+https://www.youtube.com/@tenkenh"></textarea>
+ <div class="row" style="margin-top:10px"><button class="btn primary" data-act="start">↓ Tải về Kho</button>
+ <span class="muted" style="font-size:12.5px">Giới hạn mỗi kênh:</span><input type="text" id="dl-limit" class="inline" style="width:84px" placeholder="tất cả"></div></div>
+ <div class="card"><h2>Hàng đợi tải</h2><div id="dl-notice"></div>
+ <div class="row end" style="margin-bottom:8px"><button class="btn sm" data-act="pause">Tạm dừng</button><button class="btn sm" data-act="retry" id="dl-retry">Thử lại lỗi</button><button class="btn sm" data-act="clear_done">Dọn đã xong</button></div>
+ <div class="tbl-wrap"><div class="tbl-scroll"><table><thead><tr><th>Video</th><th>Kênh</th><th>Trạng thái</th><th class="r">Tiến độ</th><th></th></tr></thead><tbody id="dl-rows"></tbody></table></div></div></div>`);}
+function rLibrary(){return page('Kho video','Video đã tải về máy. Dùng tool Facebook Poster để đăng lên Page, hoặc render lại ở đây.',`
+ <div class="card"><div class="row" style="justify-content:space-between;margin-bottom:10px"><div><h2 style="margin:0">Video trong Kho</h2><div class="muted" id="lib-sum" style="font-size:12.5px"></div></div><button class="btn" data-act="import">+ Thêm video từ máy</button></div>
+ <div id="lib-render"></div>
+ <div class="tbl-wrap"><div class="tbl-scroll"><table><thead><tr><th>Tải lúc</th><th>Video</th><th>Kênh</th><th class="r">Dài</th><th class="r">Nặng</th><th></th></tr></thead><tbody id="lib-rows"></tbody></table></div></div></div>
+ <div class="card" id="failed-card" style="display:none"><h2>Lượt tải lỗi</h2><div class="tbl-wrap"><table><thead><tr><th>Thời gian</th><th>Video</th><th>Lỗi</th></tr></thead><tbody id="failed-rows"></tbody></table></div></div>`);}
+function rRender(){return page('Render video','Chọn video trong Kho và render lại sang khung hình khác (vd 9:16 nền mờ) bằng Frame Preview.',`
+ <div class="card"><h2>Chọn video & khung hình</h2><label class="fld">Video trong Kho</label><select id="rn-file"></select>
+ <div class="row" style="margin-top:12px"><div><label class="fld" style="margin-top:0">Khung hình</label><select id="rn-ratio" class="inline"><option>9:16</option><option>1:1</option><option>4:5</option><option>16:9</option><option>4:3</option></select></div>
+ <div><label class="fld" style="margin-top:0">Kiểu ghép</label><select id="rn-fit" class="inline"><option value="blur">Nền mờ</option><option value="crop">Cắt</option><option value="pad">Viền</option></select></div>
+ <div style="align-self:flex-end"><button class="btn primary" id="rn-go" data-act="render_video">✦ Render lại</button></div></div>
+ <div id="rn-status" style="margin-top:14px"></div></div>
+ <div class="card"><h2>Nhật ký</h2><div id="log"></div></div>`);}
+function rSettings(){const r=S.render||{};return page('Cài đặt','',`
+ <div class="card"><h2>Thư mục Kho video</h2><div class="desc">Nơi lưu video tải về và render.</div>
+ <div class="row"><input type="text" value="${esc(S.output||'')}" readonly style="flex:1"><button class="btn" data-act="set_output">Chọn…</button><button class="btn" data-act="open_folder">Mở</button></div>
+ <label class="fld">Chất lượng tải</label><select id="st-q" class="inline">${['1080p','720p','480p','360p'].map(q=>`<option ${S.quality===q?'selected':''}>${q}</option>`).join('')}</select></div>
+ <div class="card"><h2>Render (Frame Preview)</h2><div class="desc">Khung hình mặc định khi render. Cần tool Frame Preview (file render_cli.py).</div>
+ <div class="row"><div><label class="fld">Khung hình</label><select id="st-ratio" class="inline">${['9:16','1:1','4:5','16:9','4:3'].map(x=>`<option ${r.ratio===x?'selected':''}>${x}</option>`).join('')}</select></div>
+ <div><label class="fld">Kiểu ghép</label><select id="st-fit" class="inline">${[['blur','Nền mờ'],['crop','Cắt'],['pad','Viền']].map(([v,l])=>`<option value="${v}" ${r.fit===v?'selected':''}>${l}</option>`).join('')}</select></div></div>
+ <label class="fld">Thư mục Frame Preview</label><div class="row"><input type="text" id="st-frame" value="${esc(r.frame_dir||'')}" placeholder="để trống sẽ tự dò" style="flex:1"><button class="btn" data-act="pick_frame">Chọn…</button></div>
+ <div class="note ${r.found?'ok':'warn'}" style="margin-top:8px">${r.found?('✓ '+esc(r.found)):'Chưa tìm thấy Frame Preview.'}</div>
+ <div class="row" style="margin-top:12px"><button class="btn primary" data-act="save_render">Lưu</button><span class="muted" id="st-state"></span></div></div>`);}
+
+function live(){const s=S;if(!s.library)return;
+ setBdg('library',s.library.length);setBdg('download',(s.jobs||[]).filter(j=>j.status==='Chờ'||j.status==='Đang chạy').length);
+ if(view==='download')liveDl();if(view==='library')liveLib();if(view==='render')liveRn();}
+function setBdg(k,n){const e=$('bdg-'+k);if(!e)return;if(n){e.style.display='';e.textContent=n;}else e.style.display='none';}
+function rows(id,list,cols,empty){const b=$(id);if(!b)return;b.innerHTML=list.length?list.join(''):`<tr><td colspan="${cols}"><div class="empty">${empty}</div></td></tr>`;}
+function liveDl(){const s=S;$('dl-notice').innerHTML=s.paused?`<div class="note warn">Đã tạm dừng. Bấm Thử lại để tiếp tục.</div>`:'';
+ rows('dl-rows',(s.jobs||[]).map(j=>`<tr><td>${esc(j.title)}</td><td>${esc(j.channel)}</td><td>${esc(j.status)}</td><td class="r">${esc(j.progress)}</td><td class="r">${j.status==='Lỗi'?`<button class="btn sm" data-act="retry" data-id="${esc(j.id)}">Thử lại</button>`:''}</td></tr>`),5,'Chưa có mục nào. Dán link rồi bấm Tải.');}
+function liveLib(){const s=S,rendering=(s.render_job||{}).status==='running';
+ rows('lib-rows',(s.library||[]).map(v=>`<tr><td class="muted">${esc(v.at||'—')}</td><td>${esc(v.title)}</td><td>${esc(v.channel)}</td><td class="r">${esc(v.duration)}</td><td class="r">${esc(v.size)}</td>
+ <td class="r" style="white-space:nowrap"><button class="btn sm" data-act="open" data-path="${esc(v.file)}">Xem</button>${v.rendered?`<button class="btn sm" data-act="open" data-path="${esc(v.rendered)}">Bản render</button>`:`<button class="btn sm" data-act="render_now" data-file="${esc(v.file)}" ${rendering?'disabled':''}>Render</button>`}<button class="btn sm" data-act="reveal" data-path="${esc(v.file)}">Thư mục</button><button class="btn sm" data-act="del" data-file="${esc(v.file)}">Xóa</button></td></tr>`),6,'<span class="big">▦</span>Kho chưa có video.');
+ $('lib-sum').textContent=(s.library||[]).length+' video';
+ const lr=$('lib-render'),rj=s.render_job||{};if(lr){lr.innerHTML=rj.status==='running'?`<div class="note">⏳ Đang render “${esc(rj.title)}”…</div>`:rj.status==='error'?`<div class="note warn">Render lỗi: ${esc(rj.error)}</div>`:'';}
+ const fc=$('failed-card');if(fc){const f=s.failed||[];fc.style.display=f.length?'':'none';if(f.length)$('failed-rows').innerHTML=f.map(x=>`<tr><td class="muted">${esc((x.at||'').replace('T',' '))}</td><td>${esc(x.title)}</td><td class="muted">${esc(x.status)}</td></tr>`).join('');}}
+function liveRn(){const s=S,sel=$('rn-file');if(!sel)return;const cur=sel.value;
+ sel.innerHTML=(s.library||[]).length?s.library.map(v=>`<option value="${esc(v.file)}">${esc(v.title)}${v.rendered?' — đã có bản render':''}</option>`).join(''):'<option value="">(Kho chưa có video)</option>';
+ if(cur&&[...sel.options].some(o=>o.value===cur))sel.value=cur;
+ const rj=s.render_job||{},box=$('rn-status');$('rn-go').disabled=rj.status==='running';
+ box.innerHTML=rj.status==='running'?`<div class="note">⏳ Đang render “${esc(rj.title)}” (${esc(rj.ratio)} · ${esc(rj.fit)})…</div>`:rj.status==='done'?`<div class="note ok">✓ Render xong: ${esc(rj.output)}</div><div class="row" style="margin-top:8px"><button class="btn sm" data-act="open" data-path="${esc(rj.output)}">Xem</button></div>`:rj.status==='error'?`<div class="note warn">Lỗi: ${esc(rj.error)}</div>`:'';
+ const log=$('log');if(log){const b=log.scrollHeight-log.scrollTop-log.clientHeight<30;log.textContent=(s.log||[]).join('\n');if(b)log.scrollTop=log.scrollHeight;}}
+
+const H={start:()=>{const t=$('dl-text');act('start_download',{text:t.value,limit:($('dl-limit')||{}).value}).then(()=>t.value='');},
+ pause:()=>act('pause'),retry:(d)=>act('retry',d.id?{id:d.id}:{}),clear_done:()=>act('clear_done'),
+ import:()=>act('import_videos').then(r=>toast('Đã thêm '+(r.added||0)+' video')),
+ open:(d)=>act('open',{path:d.path}),reveal:(d)=>act('open_folder',{path:d.path}),open_folder:()=>act('open_folder',{}),
+ render_now:(d)=>act('render_video',{file:d.file}).then(()=>toast('Đã bắt đầu render')),
+ render_video:()=>act('render_video',{file:$('rn-file').value,ratio:$('rn-ratio').value,fit:$('rn-fit').value}),
+ del:(d)=>{if(confirm('Xóa video này khỏi Kho?'))act('delete_video',{file:d.file});},
+ set_output:()=>act('set_output'),pick_frame:()=>act('pick_frame_dir').then(()=>go('settings')),
+ save_render:()=>act('save_render',{ratio:$('st-ratio').value,fit:$('st-fit').value,frame_dir:$('st-frame').value}).then(r=>{$('st-state').textContent=r.found?'✓ Đã lưu':'⚠ Đã lưu — chưa thấy Frame';}),};
+document.addEventListener('click',(e)=>{const el=e.target.closest('[data-act]');if(!el)return;const h=H[el.dataset.act];if(h){e.preventDefault();h(el.dataset);}});
+document.addEventListener('change',(e)=>{if(e.target.id==='st-q')act('set_quality',{quality:e.target.value});});
+async function refresh(){try{S=await api('/api/state');if(!$('main').innerHTML)render();else live();}catch(e){}}
+buildNav();go('download');refresh();setInterval(refresh,1500);
+</script></body></html>
