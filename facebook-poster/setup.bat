@@ -12,8 +12,8 @@ if errorlevel 1 (
 )
 if not exist ".venv\Scripts\python.exe" ( %PY% -m venv .venv || goto :error )
 ".venv\Scripts\python.exe" -m pip install -q --disable-pip-version-check --upgrade -r requirements.txt || goto :error
-echo Dang kiem tra Firefox cho tool...
-".venv\Scripts\python.exe" -m playwright install firefox || goto :error
+echo Dang cai Chromium va Firefox rieng cho tool...
+".venv\Scripts\python.exe" -m playwright install chromium firefox || goto :error
 start "" ".venv\Scripts\pythonw.exe" app.py
 exit /b
 :error

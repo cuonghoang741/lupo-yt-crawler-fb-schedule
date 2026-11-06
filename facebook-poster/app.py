@@ -5,6 +5,7 @@ Không tải YouTube, không tự động: chọn video → chọn tài khoản 
 from __future__ import annotations
 
 import json
+import copy
 import os
 import queue
 import subprocess
@@ -14,6 +15,9 @@ import uuid
 from collections import deque
 from datetime import datetime
 from pathlib import Path
+from browser_support import BrowserLaunchError, preferred_browser
+
+BUILD = "2026.11.06.1"
 
 import accounts
 import fbpost
@@ -36,8 +40,11 @@ class Store:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             data = {}
+        fresh = not data
         data.setdefault("posts", {})
         self.data = accounts.migrate(data)
+        if fresh:
+            self.account()["browser"] = preferred_browser()
 
     def save(self):
         with self.lock:
@@ -60,25 +67,42 @@ class Store:
 
 
 class Api:
-    def __init__(self):
-        self.store = Store()
+    def __init__(self, store=None, start_worker=True):
+        self.store = store or Store()
         self.logs: deque[str] = deque(maxlen=300)
         self.commands: queue.Queue = queue.Queue()
         self.current = None
+        self.current_account_id = None
+        self.pending_connections = set()
         self.compose_file = ""
         self.dialog = None
         self.stop = threading.Event()
+        for account in self.store.data["accounts"]:
+            if (account.get("connection") or {}).get("state") in ("queued", "opening", "login", "checking"):
+                account["connection"] = {"state": "idle", "message": "Lượt kết nối trước đã dừng. Bấm Mở lại trình duyệt để tiếp tục."}
         for post in self.store.data["posts"].values():  # phục hồi trạng thái dở sau khi tắt app
             if post.get("state") == "posting":
                 post.update(state="uncertain", error="App tắt sau khi bấm Đăng. Kiểm tra Page.")
             elif post.get("state") == "preparing":
                 post.update(state="failed", error="App tắt trước khi bấm Đăng.")
         self.store.save()
-        threading.Thread(target=self._run, daemon=True).start()
+        if start_worker:
+            threading.Thread(target=self._run, daemon=True).start()
 
     # ---------- worker ----------
     def log(self, m):
-        self.logs.append(f"{datetime.now():%H:%M} {m}")
+        now = datetime.now()
+        self.logs.append(f"{now:%H:%M} {m}")
+        try:
+            folder = self.store.path.parent / "logs"
+            folder.mkdir(exist_ok=True)
+            with (folder / f"facebook-poster-{now:%Y-%m-%d}.log").open("a", encoding="utf-8") as f:
+                f.write(f"{now:%H:%M:%S} {m}\n")
+        except OSError:
+            pass
+
+    def connection(self, account_id, state, message, code=None):
+        self.store.update_account(account_id, connection={"state": state, "message": message, "code": code})
 
     def _run(self):
         while not self.stop.is_set():
@@ -87,12 +111,24 @@ class Api:
             except queue.Empty:
                 continue
             self.current = cmd[0]
+            self.current_account_id = cmd[1]
             try:
                 self._handle(*cmd)
             except Exception as e:
-                self.log(f"Lỗi: {e}")
+                if cmd[0] in ("login", "open_browser", "check"):
+                    state = self.store.account(cmd[1]).get("connection", {}).get("state")
+                    error = (BrowserLaunchError("Trình duyệt đã mở nhưng chưa kiểm tra được phiên Facebook. Kiểm tra mạng rồi bấm Kiểm tra lại.", "SESSION_CHECK_FAILED")
+                             if state == "checking" else fbpost.launch_error(e, self.store.account(cmd[1])["browser"]))
+                    self.connection(cmd[1], "error", str(error), error.code)
+                    self.log(f"[{error.code}] {error}")
+                else:
+                    self.log(f"Lỗi: {e}")
             finally:
+                if cmd[0] in ("login", "open_browser"):
+                    self.pending_connections.discard(cmd[1])
                 self.current = None
+                self.current_account_id = None
+                self.commands.task_done()
 
     def _session(self, account):
         s = fbpost.Session(False, account["browser"], account["id"])
@@ -112,13 +148,18 @@ class Api:
 
     def _handle(self, kind, account_id, *args):
         account = self.store.account(account_id)
-        if kind == "login":
-            self.log(f"[{account['label']}] Mở cửa sổ Facebook — đăng nhập rồi đóng cửa sổ.")
-            fbpost.login_until_closed(kind=account["browser"], account_id=account_id)
-            return self._check(account_id)
-        if kind == "open_browser":
-            self.log(f"[{account['label']}] Mở lại trình duyệt tài khoản.")
-            fbpost.login_until_closed(kind=account["browser"], account_id=account_id)
+        if kind in ("login", "open_browser"):
+            label = fbpost.BROWSERS[account["browser"]]["label"]
+            self.connection(account_id, "opening", f"Đang mở {label}…")
+            self.log(f"[{account['label']}] Đang mở {label}.")
+            def opened():
+                message = "Đã mở trình duyệt. Đăng nhập/xác minh Facebook rồi đóng cửa sổ đó để lưu phiên."
+                self.connection(account_id, "login", message)
+                self.log(f"[{account['label']}] {message}")
+            fbpost.login_until_closed(kind=account["browser"], account_id=account_id,
+                                      on_open=opened, should_stop=self.stop.is_set)
+            if self.stop.is_set():
+                return
             return self._check(account_id)
         if kind == "check":
             return self._check(account_id)
@@ -131,14 +172,20 @@ class Api:
 
     def _check(self, account_id):
         account = self.store.account(account_id)
+        self.connection(account_id, "checking", "Cửa sổ đã đóng. Đang kiểm tra phiên Facebook…")
         try:
             with fbpost.Session(False, account["browser"], account_id) as s:
                 ident = s.account()
+            previous = (account.get("account") or {}).get("id")
+            if previous and previous != ident["id"]:
+                raise fbpost.AuthRequired("Hồ sơ đang đăng nhập tài khoản Facebook khác. Đăng nhập đúng tài khoản hoặc thêm tài khoản mới.")
             self.store.update_account(account_id, account={**ident, "ok": True,
                                       "checked_at": datetime.now().isoformat(timespec="minutes")})
             self.log(f"[{account['label']}] Đã đăng nhập: {ident.get('name') or ident.get('id')}.")
-        except fbpost.AuthRequired:
+            self.connection(account_id, "ready", "Đã lưu và kiểm tra phiên Facebook.")
+        except fbpost.AuthRequired as e:
             self._auth_failed(account_id, f"[{account['label']}] Chưa đăng nhập hoặc cần xác minh.")
+            self.connection(account_id, "error", str(e) or "Facebook chưa đăng nhập hoặc cần xác minh. Bấm Đăng nhập Facebook để mở lại.", "AUTH_REQUIRED")
 
     def _scan(self, account_id):
         account = self.store.account(account_id)
@@ -216,11 +263,13 @@ class Api:
 
     # ---------- snapshot ----------
     def snapshot(self):
-        d = self.store.data
+        with self.store.lock:
+            d = copy.deepcopy(self.store.data)
         sel = d.get("selected_account_id")
-        acc = self.store.account(sel) if sel else None
+        acc = accounts.account_for(d, sel) if sel else None
         posts = sorted(d["posts"].items(), key=lambda kv: kv[1].get("at") or "", reverse=True)
         return {
+            "build": BUILD,
             "accounts": [{"id": a["id"], "label": a["label"], "browser": a["browser"],
                           "ok": bool((a.get("account") or {}).get("ok")),
                           "name": (a.get("account") or {}).get("name"),
@@ -231,6 +280,9 @@ class Api:
             "pages_error": acc.get("pages_error") if acc else None,
             "pages_checked_at": acc.get("pages_checked_at") if acc else None,
             "browser": acc["browser"] if acc else "chrome",
+            "preferred_browser": preferred_browser(),
+            "connection": acc.get("connection") if acc else None,
+            "connection_busy": sel in self.pending_connections,
             "browsers": [{"id": k, "label": v["label"]} for k, v in fbpost.BROWSERS.items()],
             "compose_file": self.compose_file,
             "busy": self.current is not None, "activity": ACTIVITY.get(self.current or ""),
@@ -253,7 +305,7 @@ class Api:
 
     def do_add_account(self, req):
         label = (req.get("label") or "").strip() or f"Tài khoản {len(self.store.data['accounts']) + 1}"
-        browser = fbpost.normalize_browser(req.get("browser"))
+        browser = fbpost.normalize_browser(req.get("browser") or preferred_browser())
         acc = accounts.new_account(label, browser)
         with self.store.lock:
             self.store.data["accounts"].append(acc)
@@ -262,6 +314,7 @@ class Api:
         return {"ok": True, "account_id": acc["id"]}
 
     def do_remove_account(self, req):
+        self._require_idle()
         aid = req.get("account_id")
         with self.store.lock:
             self.store.data["accounts"] = [a for a in self.store.data["accounts"] if a["id"] != aid]
@@ -277,21 +330,48 @@ class Api:
         return {"ok": True}
 
     def do_set_browser(self, req):
-        self.store.update_account(self._acc_id(req), browser=fbpost.normalize_browser(req.get("browser")))
+        account = self.store.account(self._acc_id(req))
+        kind = fbpost.normalize_browser(req.get("browser"))
+        if account["browser"] == kind:
+            return {"ok": True}
+        self._require_idle()
+        self.store.update_account(account["id"], browser=kind, connection=None,
+                                  account={**(account.get("account") or {}), "ok": False})
+        return {"ok": True}
+
+    def _require_idle(self):
+        if self.current is not None or self.pending_connections or not self.commands.empty():
+            raise ValueError("Đợi thao tác đang chạy xong và đóng cửa sổ đăng nhập trước khi đổi trình duyệt/xóa tài khoản.")
+
+    def _open_connection(self, req, kind):
+        aid = self._acc_id(req)
+        with self.store.lock:
+            if aid in self.pending_connections:
+                return {"ok": True, "already_opening": True}
+            if req.get("browser"):
+                self.do_set_browser(req)
+            browser = self.store.account(aid)["browser"]
+            if fbpost.BROWSERS[browser]["channel"] and not fbpost.chromium_path(browser):
+                error = BrowserLaunchError(f"Không tìm thấy {fbpost.BROWSERS[browser]['label']}. Chọn Chromium (đi kèm tool) rồi đăng nhập lại, hoặc cài trình duyệt này.", "BROWSER_NOT_FOUND")
+                self.connection(aid, "error", str(error), error.code)
+                self.log(f"[{error.code}] {error}")
+                raise error
+            self.connection(aid, "queued", "Đã nhận lệnh mở trình duyệt. Đợi thao tác hiện tại xong nếu có.")
+            self.pending_connections.add(aid)
+            self.commands.put((kind, aid))
         return {"ok": True}
 
     def do_login(self, req):
-        if req.get("browser"):
-            self.store.update_account(self._acc_id(req), browser=fbpost.normalize_browser(req.get("browser")))
-        self.commands.put(("login", self._acc_id(req)))
-        return {"ok": True}
+        return self._open_connection(req, "login")
 
     def do_open_browser(self, req):
-        self.commands.put(("open_browser", self._acc_id(req)))
-        return {"ok": True}
+        return self._open_connection(req, "open_browser")
 
     def do_check_account(self, req):
-        self.commands.put(("check", self._acc_id(req)))
+        aid = self._acc_id(req)
+        if aid in self.pending_connections:
+            return {"ok": True}
+        self.commands.put(("check", aid))
         return {"ok": True}
 
     def do_scan_pages(self, req):

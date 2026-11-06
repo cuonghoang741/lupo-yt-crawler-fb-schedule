@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+accounts.json
+accounts.tmp
+fb-profile/
+logs/

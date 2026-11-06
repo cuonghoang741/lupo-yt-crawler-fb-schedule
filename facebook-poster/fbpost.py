@@ -10,11 +10,13 @@ import re
 import shutil
 import sys
 import time
+import tempfile
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 import ytcore
 from accounts import facebook_url, safe_id
+from browser_support import BROWSERS, DEFAULT_BROWSER, BrowserLaunchError, chromium_path, launch_error, normalize_browser
 
 BLOCKED = re.compile(r"^/(login|checkpoint|challenge|two_step_verification|recover|consent)(/|\.|$)")
 POST_LINK = re.compile(r"/(posts|videos|reel)/[^/?#]+|/(permalink|story)\.php$")
@@ -30,18 +32,6 @@ class Uncertain(Exception):
 
 # Trình duyệt hỗ trợ: Chrome/Edge chạy qua engine Chromium (dùng bản cài sẵn trên máy),
 # Firefox chạy qua engine Firefox đi kèm Playwright. Mỗi trình duyệt một thư mục hồ sơ riêng.
-BROWSERS = {
-    "chrome": {"label": "Google Chrome", "engine": "chromium", "channel": "chrome"},
-    "msedge": {"label": "Microsoft Edge", "engine": "chromium", "channel": "msedge"},
-    "firefox": {"label": "Mozilla Firefox", "engine": "firefox", "channel": None},
-}
-DEFAULT_BROWSER = "chrome"
-
-
-def normalize_browser(kind: str | None) -> str:
-    return kind if kind in BROWSERS else DEFAULT_BROWSER
-
-
 def profile_dir(kind: str = DEFAULT_BROWSER, account_id: str = "default") -> Path:
     """Tách cả tài khoản lẫn engine; tài khoản cũ tiếp tục dùng thư mục v8."""
     kind, account_id = normalize_browser(kind), safe_id(account_id)
@@ -53,31 +43,24 @@ def profile_dir(kind: str = DEFAULT_BROWSER, account_id: str = "default") -> Pat
     return d
 
 
-def chromium_path(channel: str) -> str | None:
-    """Đường dẫn exe của Chrome/Edge trên máy, để báo lỗi rõ nếu thiếu."""
-    if os.name == "nt":
-        roots = [os.environ.get(k, "") for k in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")]
-        rel = {"chrome": r"Google\Chrome\Application\chrome.exe", "msedge": r"Microsoft\Edge\Application\msedge.exe"}[channel]
-        for root in roots:
-            if root and Path(root, rel).exists():
-                return str(Path(root, rel))
-        return None
-    if sys.platform == "darwin":
-        app = {"chrome": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-               "msedge": "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"}[channel]
-        return app if Path(app).exists() else None
-    exe = shutil.which("google-chrome" if channel == "chrome" else "microsoft-edge")
-    return exe
-
-
-def login_until_closed(timeout_s: int = 15 * 60, kind: str = DEFAULT_BROWSER, account_id: str = "default") -> None:
+def login_until_closed(timeout_s: int = 15 * 60, kind: str = DEFAULT_BROWSER, account_id: str = "default",
+                       on_open=None, should_stop=lambda: False) -> None:
     """Mở cửa sổ Facebook bằng đúng hồ sơ bot dùng để đăng; chờ người dùng đăng nhập rồi tự đóng cửa sổ."""
     with Session(visible=True, kind=kind, account_id=account_id) as s:
-        s.page.goto("https://www.facebook.com/", wait_until="domcontentloaded")
+        if on_open:
+            on_open()
+        try:
+            s.page.goto("https://www.facebook.com/", wait_until="domcontentloaded", timeout=30000)
+        except Exception as e:
+            # Giữ cửa sổ cho người dùng kiểm tra mạng/đăng nhập tay, thay vì mở ló rồi đóng.
+            if not s.context.pages:
+                return
+            if "timeout" not in str(e).lower() and "net::err_" not in str(e).lower():
+                raise
         closed = []
         s.context.on("close", lambda *_: closed.append(True))
         deadline = time.time() + timeout_s
-        while not closed and time.time() < deadline:
+        while not should_stop() and not closed and time.time() < deadline:
             try:
                 if not s.context.pages:
                     break
@@ -93,19 +76,28 @@ class Session:
     trong user agent, dễ bị Facebook bắt xác minh, mà bot không sửa dấu vân tay trình duyệt."""
 
     def __init__(self, visible: bool = False, kind: str = DEFAULT_BROWSER, account_id: str = "default"):
-        from playwright.sync_api import sync_playwright
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            raise BrowserLaunchError("Chưa cài Playwright. Đóng tool rồi chạy setup.bat.", "PLAYWRIGHT_NOT_INSTALLED") from None
 
         self.kind = normalize_browser(kind)
         self.account_id = account_id
         spec = BROWSERS[self.kind]
-        if spec["engine"] == "chromium" and not chromium_path(spec["channel"]):
-            raise RuntimeError(f"Không tìm thấy {spec['label']} trên máy. Cài {spec['label']} hoặc chọn trình duyệt khác.")
-        self._pw = sync_playwright().start()
+        executable = chromium_path(self.kind) if spec["channel"] else None
+        if spec["channel"] and not executable:
+            raise BrowserLaunchError(f"Không tìm thấy {spec['label']} trên máy. Chọn Chromium (đi kèm tool), Edge đã cài, hoặc cài trình duyệt đã chọn.", "BROWSER_NOT_FOUND")
+        self._pw = None
+        self._closed = False
         try:
+            profile = profile_dir(self.kind, account_id)
+            with tempfile.TemporaryFile(dir=profile):
+                pass  # báo lỗi quyền ghi trước khi gọi trình duyệt
+            self._pw = sync_playwright().start()
             if spec["engine"] == "firefox":
                 # Firefox ẩn bằng headless (UA không lộ "Headless" như Chrome), hiện khi đăng nhập.
                 self.context = self._pw.firefox.launch_persistent_context(
-                    str(profile_dir(self.kind, account_id)), headless=not visible, viewport={"width": 1366, "height": 900},
+                    str(profile), headless=not visible, timeout=30000, viewport={"width": 1366, "height": 900},
                     firefox_user_prefs={"dom.webdriver.enabled": False, "useAutomationExtension": False})
             else:
                 # Bỏ cờ tự động của Playwright để trình duyệt trông như người dùng thật (không giả vân tay).
@@ -113,16 +105,12 @@ class Session:
                 if not visible:
                     args.append("--window-position=-32000,-32000")
                 self.context = self._pw.chromium.launch_persistent_context(
-                    str(profile_dir(self.kind, account_id)), channel=spec["channel"], headless=False,
+                    str(profile), **({"executable_path": executable} if executable else {}), headless=False, timeout=30000,
                     ignore_default_args=["--enable-automation"], args=args, viewport={"width": 1366, "height": 900})
         except Exception as e:
-            self._pw.stop()
-            low = str(e).lower()
-            if "ProcessSingleton" in str(e) or "already" in low:
-                raise RuntimeError("Cửa sổ đăng nhập Facebook còn mở. Đóng nó rồi thử lại.")
-            if spec["engine"] == "firefox" and ("executable" in low or "download" in low or "install" in low):
-                raise RuntimeError("Chưa cài Firefox cho tool. Chạy lại setup.bat (tải Firefox của Playwright).")
-            raise
+            if self._pw:
+                self._pw.stop()
+            raise launch_error(e, self.kind) from None
         # Ẩn navigator.webdriver trên mọi trang (dấu hiệu bot rõ nhất Facebook kiểm tra).
         try:
             self.context.add_init_script(
@@ -147,10 +135,17 @@ class Session:
         return session
 
     def close(self):
+        if getattr(self, "_closed", False):
+            return
+        self._closed = True
         if self._pw is None:
             return self.context.close()
         try:
-            self.context.close()
+            try:
+                self.context.close()
+            except Exception as e:
+                if not any(s in str(e).lower() for s in ("has been closed", "target closed")):
+                    raise
         finally:
             self._pw.stop()
 
